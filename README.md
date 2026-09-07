@@ -76,3 +76,7 @@ Ratings and the web app come last because both need real data to be worth anythi
 ## Brand
 
 Base `#13151E`, orange `#FF7A45`, teal `#35D6C4`. The mark is a P cleaved on the diagonal, the orange half against the teal half, inside a ring of two arcs that reads as a rating dial. Source of truth is `assets/brand/policyclash.svg`. PNGs are exported from it, never edited as raster.
+
+## License
+
+[MIT](LICENSE).
