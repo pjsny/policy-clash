@@ -1,0 +1,27 @@
+# node
+node_modules/
+.next/
+dist/
+*.tsbuildinfo
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# runtime artifacts
+replays/
+results/
+*.log
+
+# os / editor
+.DS_Store
+.idea/

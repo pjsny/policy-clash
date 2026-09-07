@@ -1,0 +1,19 @@
+[project]
+name = "policyclash-envs"
+version = "0.1.0"
+description = "Two-player environments for the PolicyClash ladder"
+requires-python = ">=3.11"
+dependencies = ["numpy>=2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["policyclash_envs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
