@@ -4,15 +4,21 @@
 
 <h1 align="center">PolicyClash</h1>
 
-<p align="center">Head-to-head evaluation for RL policies. Environments, a match runner, ratings, and a web arena to watch it happen.</p>
+<p align="center">Head-to-head evaluation for RL policies in video games. Environments, a match runner, ratings, and a web arena to watch it happen.</p>
+
+<p align="center">
+  <a href="https://discord.gg/YnkXePUc"><img src="https://img.shields.io/badge/Discord-join%20the%20server-FF7A45?style=flat-square&logo=discord&logoColor=white&labelColor=13151E" alt="Join the PolicyClash Discord"></a>
+</p>
 
 ---
 
-Early. The layout below is settled, the code is not written yet.
+Early. The layout below is settled, the code is not written yet. That is the interesting part: environment design, rating math, and sandboxing are all still open. **[Join the Discord](https://discord.gg/YnkXePUc)** if you want to argue about any of it or claim an env.
 
 ## What this is
 
-PolicyClash runs two policies against the same environment, scores the result, and updates a rating. Repeat a few thousand times and you get a leaderboard that means something, plus replays you can scrub through.
+Most game RL is graded against a fixed opponent: a scripted bot, a search baseline, a frozen checkpoint. That number tells you how well a policy exploits that one opponent, not how well it plays. PolicyClash grades policies against each other instead. Two policies, the same environment, the same seed, a scored outcome, a rating update. Repeat a few thousand times and you get a leaderboard that means something, plus replays you can scrub through.
+
+The longer goal is the environments. Ranking policies is only interesting if they are playing something worth playing, so the work bends toward simulation environments of real games — the actual rules, the actual state, fast enough to run millions of matches. Board games first because they are cheap to verify; from there, the mechanics that make video games hard: hidden information, simultaneous turns, continuous control, long horizons.
 
 Three moving parts:
 
@@ -30,7 +36,7 @@ policy-clash/
 │   ├── schema/              Match/replay/policy JSON contracts (zod), the TS↔Python boundary
 │   ├── rating/              Glicko-2 implementation, pure functions, no I/O
 │   └── ui/                  Shared React components and brand tokens
-├── envs/                    Python: policyclash_envs, thin wrappers over PufferLib Ocean
+├── envs/                    Python: policyclash_envs, C rules cores with thin adapters
 ├── runner/                  Python: match runner, policy loading, sandboxing
 ├── docs/                    Design notes, env specs, rating math
 ├── assets/brand/            Logo SVG and PNG exports
@@ -54,6 +60,8 @@ Glicko-2 is small, fiddly, and easy to get subtly wrong. Isolating it means it c
 Rules are C, under `envs/csrc/`. A thin Python layer in `envs/policyclash_envs` adapts each compiled core to one interface: `reset(seed)`, `step(action)`, `replay()`. Connect4 is the reference implementation. See [docs/adding-an-env.md](docs/adding-an-env.md) to add your own.
 
 The C core carries no Python headers, so it can be fuzzed standalone and compiled to wasm for the replay viewer. A full 42-move connect4 game costs 0.5 microseconds in the rules and 39.8 microseconds through the Python adapter, which is why the adapter stays thin.
+
+Connect4 is a calibration target, not the point. It is small enough to prove the harness is honest: the rules are verifiable by hand, determinism is testable, and a bad rating implementation shows up immediately. The environments worth building are the ones people actually play, which means writing rules cores for real games — reimplemented, not screen-scraped — and paying the cost of hidden information, simultaneous moves, and horizons measured in thousands of steps rather than forty-two. Every env lands as a C core plus a thin adapter for the same reason: at a few thousand matches per rating update, the simulator is the budget.
 
 We do not depend on [PufferLib](https://github.com/PufferAI/PufferLib), despite it being the obvious candidate. Its Ocean envs are single agent: `ocean/connect4/binding.c` sets `num_agents = 1` and `c_step` answers your move with a depth-3 negamax compiled into the env, which is a benchmark against a fixed bot rather than a match. Its PyPI release is also 3.0.0 against a source tree declaring 4.0.0, and `build.sh` links exactly one env into `pufferlib/_C.so` per build with no extension modules in `pyproject.toml`, so `pip install pufferlib` ships zero environments. It becomes the right dependency if we host training or need an expensive simulator.
 
