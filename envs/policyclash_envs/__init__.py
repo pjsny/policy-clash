@@ -11,9 +11,11 @@ from typing import Callable
 
 from .base import EnvSpec, Observation, Outcome, StepResult, Termination, TwoPlayerEnv
 from .connect4 import Connect4
+from .tron_duel import TronDuel
 
 REGISTRY: dict[str, Callable[[], TwoPlayerEnv]] = {
     Connect4.spec.qualified_id: Connect4,
+    TronDuel.spec.qualified_id: TronDuel,
 }
 
 
@@ -38,6 +40,7 @@ __all__ = [
     "Outcome",
     "StepResult",
     "Termination",
+    "TronDuel",
     "TwoPlayerEnv",
     "make",
     "spec",

@@ -20,17 +20,38 @@ DRAWN_GAME = [
 # Column 1 is the first to fill, on move index 29.
 FILLS_COLUMN_1 = DRAWN_GAME[:30]
 
+# Fed to the seat that is not on move. The contract says a non-acting seat's
+# action is ignored rather than validated, so passing something that would
+# forfeit if it were read keeps that promise under test everywhere.
+IGNORED = COLS + 99
+
 
 @pytest.fixture
 def env():
     return make(ENV_ID)
 
 
+def seat_to_move(result):
+    seats = [seat for seat, obs in enumerate(result.observations) if obs is not None]
+    assert len(seats) == 1, "connect4 is turn-based: exactly one seat acts per tick"
+    return seats[0]
+
+
+def mover_obs(result):
+    return result.observations[seat_to_move(result)]
+
+
+def advance(env, result, move):
+    """Step the seat `result` put on move, garbage for the other seat."""
+    actions = [IGNORED, IGNORED]
+    actions[seat_to_move(result)] = move
+    return env.step(*actions)
+
+
 def play(env, moves):
-    env.reset(seed=0)
-    result = None
+    result = env.reset(seed=0)
     for move in moves:
-        result = env.step(move)
+        result = advance(env, result, move)
     return result
 
 
@@ -64,39 +85,67 @@ def test_win_does_not_wrap_between_columns(env):
 def test_full_board_is_a_draw(env):
     result = play(env, DRAWN_GAME)
     assert result.done
+    assert result.observations == (None, None)
     assert result.outcome is Outcome.DRAW
     assert result.termination is Termination.NATURAL
     assert len(env.replay()) == COLS * ROWS
 
 
+def test_exactly_one_seat_acts_and_the_seats_alternate(env):
+    """The invariant the runner leans on, on the turn-based side.
+
+    A runner reads `observations` to learn who owes an action and never tracks
+    turn order itself, which is what lets the same loop drive a simultaneous
+    env where both entries are set.
+    """
+    result = env.reset(seed=0)
+    acting = []
+    for move in [0, 1, 2, 3, 4]:
+        assert sum(obs is not None for obs in result.observations) == 1
+        acting.append(seat_to_move(result))
+        result = advance(env, result, move)
+
+    assert acting == [0, 1, 0, 1, 0]
+
+
 def test_illegal_action_forfeits(env):
-    play(env, FILLS_COLUMN_1)
-    result = env.step(1)  # column 1 is full
+    result = play(env, FILLS_COLUMN_1)
+    result = advance(env, result, 1)  # column 1 is full
     assert result.termination is Termination.ILLEGAL_ACTION
     assert result.outcome is Outcome.PLAYER_1  # 30 moves played, so player 0 moved
 
 
 def test_out_of_range_action_forfeits(env):
-    env.reset(seed=0)
-    result = env.step(COLS)
+    start = env.reset(seed=0)
+    assert seat_to_move(start) == 0
+
+    result = env.step(COLS, IGNORED)
     assert result.outcome is Outcome.PLAYER_1
     assert result.termination is Termination.ILLEGAL_ACTION
 
 
-def test_observation_is_from_the_movers_perspective(env):
-    obs = env.reset(seed=0)
-    assert obs.player == 0
-    assert not obs.features.any()
+def test_non_movers_action_is_ignored_not_validated(env):
+    """Seat 1 is handed a forfeiting action while seat 0 is on move."""
+    env.reset(seed=0)
+    result = env.step(3, COLS + 5)
+    assert not result.done
+    assert seat_to_move(result) == 1
 
-    result = env.step(3)
+
+def test_observation_is_from_the_movers_perspective(env):
+    start = env.reset(seed=0)
+    assert start.observations[0] is not None  # seat 0 opens
+    assert not start.observations[0].features.any()
+
+    result = advance(env, start, 3)
     # Player 0's piece reads as -1 to player 1, who is now on move.
-    assert result.observation.player == 1
-    assert result.observation.features[3 * ROWS] == -1.0
+    assert result.observations[0] is None
+    assert result.observations[1].features[3 * ROWS] == -1.0
 
 
 def test_legal_mask_closes_a_full_column(env):
     result = play(env, FILLS_COLUMN_1)
-    legal = result.observation.legal_actions
+    legal = mover_obs(result).legal_actions
     assert not legal[1]
     assert legal.sum() == COLS - 1
 
@@ -108,6 +157,7 @@ def test_replay_reproduces_the_episode(env):
 
     second = play(make(ENV_ID), recorded)
 
+    # One entry per tick, which is the flat contract at actors_per_tick == 1.
     assert recorded == moves
     assert second.outcome is first.outcome
 
@@ -119,15 +169,16 @@ def test_seed_does_not_change_the_episode():
     has to stay true or replays stop reproducing.
     """
     a, b = make(ENV_ID), make(ENV_ID)
-    a.reset(seed=1)
-    b.reset(seed=999_999)
+    ra, rb = a.reset(seed=1), b.reset(seed=999_999)
 
     for move in [3, 3, 2, 4, 1, 0, 5]:
-        ra, rb = a.step(move), b.step(move)
+        ra, rb = advance(a, ra, move), advance(b, rb, move)
         assert ra.done == rb.done
         assert ra.outcome is rb.outcome
-        if ra.observation and rb.observation:
-            assert np.array_equal(ra.observation.features, rb.observation.features)
+        for oa, ob in zip(ra.observations, rb.observations):
+            assert (oa is None) == (ob is None)
+            if oa is not None:
+                assert np.array_equal(oa.features, ob.features)
 
     assert a.replay() == b.replay()
 
@@ -135,7 +186,7 @@ def test_seed_does_not_change_the_episode():
 def test_step_after_done_raises(env):
     play(env, [0, 1, 0, 1, 0, 1, 0])
     with pytest.raises(RuntimeError):
-        env.step(2)
+        env.step(2, 2)
 
 
 def test_unknown_env_id_names_what_is_registered():

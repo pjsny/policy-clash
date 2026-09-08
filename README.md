@@ -57,11 +57,15 @@ Glicko-2 is small, fiddly, and easy to get subtly wrong. Isolating it means it c
 
 ## Environments
 
-Rules are C, under `envs/csrc/`. A thin Python layer in `envs/policyclash_envs` adapts each compiled core to one interface: `reset(seed)`, `step(action)`, `replay()`. Connect4 is the reference implementation. See [docs/adding-an-env.md](docs/adding-an-env.md) to add your own.
+Rules are C, under `envs/csrc/`. A thin Python layer in `envs/policyclash_envs` adapts each compiled core to one interface: `reset(seed)`, `step(action_0, action_1)`, `replay()` — one action per seat per tick, so a turn-based env and a simultaneous one are the same shape to the runner. See [docs/adding-an-env.md](docs/adding-an-env.md) to add your own.
 
 The C core carries no Python headers, so it can be fuzzed standalone and compiled to wasm for the replay viewer. A full 42-move connect4 game costs 0.5 microseconds in the rules and 39.8 microseconds through the Python adapter, which is why the adapter stays thin.
 
-Connect4 is a calibration target, not the point. It is small enough to prove the harness is honest: the rules are verifiable by hand, determinism is testable, and a bad rating implementation shows up immediately. The environments worth building are the ones people actually play, which means writing rules cores for real games — reimplemented, not screen-scraped — and paying the cost of hidden information, simultaneous moves, and horizons measured in thousands of steps rather than forty-two. Every env lands as a C core plus a thin adapter for the same reason: at a few thousand matches per rating update, the simulator is the budget.
+[**tron-duel-v1**](docs/envs/tron-duel-v1.md) is the first ladder env: two light cycles on a 13x13 grid, simultaneous moves, permanent trails, seeded asymmetric spawns. Simultaneous because that is one of the mechanics that makes video games hard, and seeded because a rating is only worth computing if distinct seeds are distinct games — a mirrored start would have two copies of one deterministic policy drive into each other in the middle on every seed.
+
+**Connect4** is not going anywhere; it is the permanent harness fixture and the anchor ladder. It is small enough to prove the harness is honest: the rules are verifiable by hand, determinism is testable, and a bad rating implementation shows up immediately. What it cannot be is a ladder of its own — it ignores its seed, so two deterministic policies replay the same 42 moves however many times you schedule them. It stays as the fixed reference every new env and every rating change is measured against.
+
+Beyond those two, the environments worth building are the ones people actually play, which means writing rules cores for real games — reimplemented, not screen-scraped — and paying the cost of hidden information, simultaneous moves, and horizons measured in thousands of steps rather than forty-two. Every env lands as a C core plus a thin adapter for the same reason: at a few thousand matches per rating update, the simulator is the budget.
 
 We do not depend on [PufferLib](https://github.com/PufferAI/PufferLib), though 4.0 narrows the gap. It ships `pufferl.match()` — head-to-head play between two checkpoints in a two-agent selfplay env, reporting per-slot win rates and a draw rate — plus selfplay modes for chess, go, robocode, and slimevolley. `ocean/chess/binding.c` randomizes the slot↔color mapping per env so policies in fixed slots see both colors equally, which is the same first-move-advantage problem paired seating solves here.
 
