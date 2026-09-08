@@ -12,7 +12,7 @@
 
 ---
 
-Early. The layout below is settled, the code is not written yet. That is the interesting part: environment design, rating math, and sandboxing are all still open. **[Join the Discord](https://discord.gg/YnkXePUc)** if you want to argue about any of it or claim an env.
+**[Join the Discord](https://discord.gg/YnkXePUc)** to argue about environment design, rating math, or sandboxing — or to claim an env.
 
 ## What this is
 
@@ -68,7 +68,7 @@ We do not depend on [PufferLib](https://github.com/PufferAI/PufferLib), despite 
 ## Build order
 
 1. `packages/schema` with the match request and result shapes.
-2. `envs` with connect4. Done: rules, forfeit-on-illegal-action, and a determinism test.
+2. `envs` with connect4: rules, forfeit-on-illegal-action, and a determinism test.
 3. `runner` that plays a match between two random policies and writes a result.
 4. `apps/web` reading results from disk before any database exists.
 5. `packages/rating`, once there are real match results to rate.
