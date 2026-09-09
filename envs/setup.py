@@ -30,5 +30,11 @@ setup(
             include_dirs=["csrc"],
             extra_compile_args=CFLAGS,
         ),
+        Extension(
+            name="policyclash_envs._sap2",
+            sources=["csrc/sap2_binding.c"],
+            include_dirs=["csrc"],
+            extra_compile_args=CFLAGS,
+        ),
     ],
 )
