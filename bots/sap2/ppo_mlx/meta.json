@@ -1,0 +1,10 @@
+{
+  "name": "ppo_mlx",
+  "author": "pjsny",
+  "added": "2026-09-14",
+  "class": "ranked",
+  "deps": [
+    "mlx"
+  ],
+  "notes": "PPO, 2x128 tanh, masked logits. 40 iters x 64 episodes against a pool of itself, greedy, and random. 65s on an M4 Pro GPU."
+}

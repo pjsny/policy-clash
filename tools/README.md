@@ -39,58 +39,70 @@ next panel's displayed life total. The tool reads the actual before/after
 lives delta rather than inferring, and calls out the catch-up rule
 explicitly when it's what happened.
 
-## `scripted_sap2.py`
+## `arena_sap2.py`
 
-Three deterministic scripted agents for `sap2-v1`, and a round robin that
-rates them. Answers how much room a fixed rule leaves on the table, which
-is the same question as how strong a learned policy has to be before it is
-interesting.
+The `sap2-v1` arena. Discovers every `bots/sap2/*/bot.py`, plays a round
+robin, fits a rating, and rewrites `bots/sap2/LEADERBOARD.md`. See
+`bots/README.md` for the submission interface and the rules a bot plays
+under.
 
 ```
-envs/.venv/bin/python tools/scripted_sap2.py --matches 60
-envs/.venv/bin/python tools/scripted_sap2.py --matches 20 --rollouts 1 --horizon 1
+envs/.venv/bin/python tools/arena_sap2.py
+envs/.venv/bin/python tools/arena_sap2.py --matches 120
+envs/.venv/bin/python tools/arena_sap2.py --only greedy,ppo_mlx
+envs/.venv/bin/python tools/arena_sap2.py --reference --no-write
 ```
 
-No `rich` dependency — plain stdout, same venv rule as the visualizer.
+A ranked bot receives an `Observation` and nothing else. That is enforced by
+construction, not by review: `act()` takes one argument, so a bot has nothing
+else to reach for. A bot marked `"class": "reference"` may declare
+`act_privileged(env, seat, obs)` and reach the env, and never ranks —
+`mc_search` is one, because a clone exposes the opponent's team and the RNG
+words behind the coming shop rolls.
 
-- `random` — uniform over the legal mask. The floor.
-- `greedy` — a fixed rule, no simulation: combine a duplicate pair, else buy
-  the best-statted pet that fits an empty slot, else buy a pet that sets up a
-  future combine, else end the turn. Never rerolls, sells, buys food, or
-  freezes: each needs a judgement about a future shop that a fixed rule can't
-  make well, and at Tier 1 spending the gold on a body is the reliable
-  alternative.
-- `mc` — one-ply search over the legal mask, each candidate scored by
-  rollouts on `env.clone()`. Needs the optional `Forkable` feature.
+Ratings come from a Bradley-Terry fit rather than sequential Elo updates. A
+round robin has no meaningful match order, so an Elo update would report the
+order and the K factor as much as the strength. The fit adds one drawn game
+per pair as a prior: a bot that wins every game has no finite
+maximum-likelihood strength, and a clean sweep is normal here, so without it a
+rating reports only how long the iteration ran.
 
-Measured, 60 seeds × both seatings per pair (360 matches), `mc` at 4
-rollouts and horizon 2:
+The arena also reports per-action median and maximum milliseconds and counts
+forfeits. A forfeit means the bot returned an out-of-range action, which
+`sap2-v1` treats as an instant loss — a broken bot, not a weak one.
 
-| pair | record | winrate |
-|---|---|---|
-| `greedy` vs `random` | 120–0 | 100% |
-| `mc` vs `random` | 120–0 | 100% |
-| `mc` vs `greedy` | 110–10 | 91.7% |
+## `train_ppo_sap2.py`
 
-Bradley-Terry on the Elo scale, field mean 1500: `mc` 2050, `greedy` 1649,
-`random` 801. A clean sweep has no finite maximum-likelihood strength, so the
-fit adds one drawn game per pair as a prior and every number is a
-conservative bound on the real separation, not a point estimate.
+A small PPO in MLX that trains a `sap2-v1` policy and writes weights into
+`bots/sap2/ppo_mlx/weights.safetensors`.
 
-**The depth is doing the work, not the peeking.** At `--rollouts 1 --horizon
-1` — exact lookahead over the current round only — `mc` is a coin flip
-against `greedy` (52.5% over 40 matches). Going to horizon 2 takes it to
-91.7%. Both configurations see the same cloned state, so the gap is search
-depth rather than the information a clone exposes. What a one-round lookahead
-cannot see is that this round's best board is often the wrong purchase for
-next round's economy.
+```
+uv pip install --python envs/.venv/bin/python mlx       # one-time
+envs/.venv/bin/python tools/train_ppo_sap2.py --iters 40 --episodes 64 \
+    --save bots/sap2/ppo_mlx/weights.safetensors
+```
 
-**`mc` is tooling, not a submission.** A clone carries the opponent's team and
-the RNG words behind the coming shop rolls and battles; an observation shows
-neither. So this rating is not comparable to a ladder submission's, and a
-legal search submission needs the seat-masked fork that no env implements
-yet. See `base.Forkable` and `docs/adding-an-env.md`.
+2x128 tanh, a policy head and a value head, masked logits. Four things the
+task forces, each of which sinks a run if skipped:
 
-Cost: search burns ~784 simulated ticks per real match tick at horizon 2, ~50
-at horizon 1. `clone()` is what makes that affordable — replaying from the
-seed instead costs 289x more per node at a depth of 30 ticks.
+- **Action masking is mandatory.** An out-of-range action forfeits, and most
+  of the 49 actions are illegal at any tick. An unmasked policy forfeits its
+  way through early training.
+- **Reward is terminal-only and ~146 ticks away.** The per-round potential
+  `trophies - (5 - lives)` supplies the intermediate signal — the same
+  quantity `mc_search` scores, so the two chase a comparable objective.
+- **Train against a pool, never `greedy` alone.** `greedy` is deterministic,
+  so a policy trained against it can win by memorizing its fixed replies
+  instead of playing the game. The opponent seat draws from the current
+  policy, `greedy`, and `random` — all loaded from `bots/`, so a bot cannot
+  behave one way in training and another way on the board.
+- **Evaluate on held-out seeds.** Training draws seeds below 500000;
+  evaluation uses two disjoint ranges from 900000 and 1400000. One range can
+  flatter a policy that happened to suit its shop rolls.
+
+Measured: 40 iterations x 64 episodes, 242k transitions, **65 seconds** on an
+M4 Pro GPU. The result on both held-out ranges was 92.5% and 90.8% against
+`greedy`, and 74.2% and 70.0% against `mc_search`. The arena reproduces those
+numbers exactly from its own independent match loop, which is the cross-check
+that makes them worth quoting.
+

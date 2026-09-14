@@ -1,0 +1,8 @@
+{
+  "name": "random",
+  "author": "pjsny",
+  "added": "2026-09-14",
+  "class": "ranked",
+  "deps": [],
+  "notes": "Uniform over the legal mask. The rating floor."
+}

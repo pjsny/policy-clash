@@ -1,0 +1,8 @@
+{
+  "name": "mc_search",
+  "author": "pjsny",
+  "added": "2026-09-14",
+  "class": "reference",
+  "deps": [],
+  "notes": "One-ply search, 4 rollouts per candidate, horizon 2 rounds, on env.clone(). Breaks the observation-only rule on purpose as a ceiling."
+}

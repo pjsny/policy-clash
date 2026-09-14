@@ -1,0 +1,8 @@
+{
+  "name": "greedy",
+  "author": "pjsny",
+  "added": "2026-09-14",
+  "class": "ranked",
+  "deps": [],
+  "notes": "Fixed rule: combine, else buy the best-statted pet that fits, else set up a combine, else end the turn."
+}
