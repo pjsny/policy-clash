@@ -81,8 +81,16 @@ def load_bot(slug: str):
     return module.make_bot
 
 
-def discover(only: set[str] | None, include_reference: bool) -> list[Entry]:
-    entries = []
+def discover(only: set[str] | None, include_reference: bool) -> tuple[list[Entry], list[str]]:
+    """Load every bot. Returns the loaded entries and the slugs that failed.
+
+    The failures matter as much as the successes. A bot whose dependency is
+    missing on this machine - `mlx` on a machine that is not an Apple
+    silicon Mac, for one - must not quietly vanish from a board that then
+    replaces the committed one.
+    """
+    entries: list[Entry] = []
+    skipped: list[str] = []
     for bot_file in sorted(BOTS_DIR.glob("*/bot.py")):
         slug = bot_file.parent.name
         if only and slug not in only:
@@ -98,14 +106,17 @@ def discover(only: set[str] | None, include_reference: bool) -> list[Entry]:
         try:
             spec.loader.exec_module(module)
         except Exception as exc:  # a missing dependency must be loud, not silent
-            print(f"  skipping {slug}: import failed ({exc.__class__.__name__}: {exc})")
+            deps = ", ".join(meta.get("deps", [])) or "none declared"
+            print(f"  skipping {slug}: import failed ({exc.__class__.__name__}: {exc}); deps: {deps}")
+            skipped.append(slug)
             continue
         if not hasattr(module, "make_bot"):
             print(f"  skipping {slug}: no make_bot(seed)")
+            skipped.append(slug)
             continue
 
         entries.append(Entry(slug, meta, module.make_bot))
-    return entries
+    return entries, skipped
 
 
 def play(first: Entry, second: Entry, seed: int) -> tuple[Outcome, Termination]:
@@ -260,11 +271,16 @@ def main() -> None:
     parser.add_argument("--only", type=str, default="", help="comma-separated slugs")
     parser.add_argument("--reference", action="store_true", help="include reference bots")
     parser.add_argument("--no-write", action="store_true", help="print only, leave the board alone")
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="write the board even though a bot failed to load",
+    )
     args = parser.parse_args()
 
     only = {s.strip() for s in args.only.split(",") if s.strip()} or None
     print(f"discovering bots in {BOTS_DIR.relative_to(ROOT)}")
-    entries = discover(only, args.reference)
+    entries, skipped = discover(only, args.reference)
     if len(entries) < 2:
         sys.exit(f"need at least 2 bots to run a round robin, found {len(entries)}")
     print(f"  {', '.join(e.slug for e in entries)}\n")
@@ -309,6 +325,16 @@ def main() -> None:
         print(f"\n  WARNING {e.slug} median {median(e.act_times):.1f} ms is over the {TIME_BUDGET_MS:.0f} ms budget")
 
     if not args.no_write:
+        if skipped and not args.allow_partial:
+            # The board replaces a committed file, so a partial run must not
+            # write it. `ppo_mlx` depends on mlx, which needs an Apple silicon
+            # Mac; on any other machine that bot fails to load, and writing
+            # here would commit a board with a bot missing and every rating
+            # refitted without it. Refuse, and say what to do about it.
+            print(f"\nREFUSING to write {BOARD.relative_to(ROOT)}: {', '.join(skipped)} failed to load.")
+            print("Install the missing dependencies, or pass --allow-partial to write without them.")
+            print(f"done in {elapsed:.0f}s\n")
+            sys.exit(1)
         write_board(entries, ratings, wins, records, args.matches, elapsed)
         print(f"\nwrote {BOARD.relative_to(ROOT)}")
     print(f"done in {elapsed:.0f}s\n")

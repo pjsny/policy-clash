@@ -12,6 +12,23 @@ envs/.venv/bin/python tools/arena_sap2.py --only greedy,ppo_mlx
 envs/.venv/bin/python tools/arena_sap2.py --reference      # include privileged bots, unranked
 ```
 
+## Weights are committed, so no one retrains to rank
+
+A bot that loads weights commits them next to its `bot.py` —
+`bots/sap2/ppo_mlx/weights.safetensors` is 182 KB and tracked. Clone the repo,
+add your bot, run the arena, and you get the full board. Training produces a
+new policy; it is never a step toward ranking existing ones.
+
+One consequence of committed weights is a dependency the arena cannot always
+satisfy. `ppo_mlx` needs `mlx`, which needs an Apple silicon Mac. On any other
+machine that bot fails to import, and the arena says so.
+
+Because the board replaces a committed file, the arena **refuses to write it**
+when any bot failed to load, and exits 1. Otherwise a contributor on the wrong
+platform would commit a board with a bot missing and every rating refitted
+without it. Install the missing dependency, or pass `--allow-partial` to
+accept a board that leaves the bot out.
+
 ## A record is frozen
 
 A bot directory is a record, not a library. Once it lands and appears on the

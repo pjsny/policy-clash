@@ -51,6 +51,7 @@ envs/.venv/bin/python tools/arena_sap2.py
 envs/.venv/bin/python tools/arena_sap2.py --matches 120
 envs/.venv/bin/python tools/arena_sap2.py --only greedy,ppo_mlx
 envs/.venv/bin/python tools/arena_sap2.py --reference --no-write
+envs/.venv/bin/python tools/arena_sap2.py --allow-partial   # a bot failed to import
 ```
 
 A ranked bot receives an `Observation` and nothing else. That is enforced by
@@ -70,6 +71,12 @@ rating reports only how long the iteration ran.
 The arena also reports per-action median and maximum milliseconds and counts
 forfeits. A forfeit means the bot returned an out-of-range action, which
 `sap2-v1` treats as an instant loss — a broken bot, not a weak one.
+
+The board replaces a committed file, so the arena refuses to write it when any
+bot failed to import, and exits 1. `ppo_mlx` needs `mlx`, which needs an Apple
+silicon Mac; without that guard a contributor on another platform would commit
+a board missing the top entry, with every rating refitted without it. Weights
+are committed, so nobody retrains to rank — see `bots/README.md`.
 
 ## `train_ppo_sap2.py`
 
