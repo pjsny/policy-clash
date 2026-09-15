@@ -14,13 +14,17 @@ why a step limit is needed here and wasn't there); those comparisons
 don't imply the earlier version is present anywhere in this repo.
 
 Implementation: `envs/csrc/sap2.h` / `sap2_binding.c` /
-`envs/policyclash_envs/sap2.py`, registered as `sap2-v1`. 18 tests in
-`envs/tests/test_sap2.py` (58 total with connect4 and tron-duel's own
-suites), plus a 500-match random-legal-play fuzz run at the Python level
+`envs/policyclash_envs/sap2.py`, registered as `sap2-v1`. Roster is Tier 1
+(10 pets) plus Tier 2 (10 more, unlocked turn 3+ per the tier schedule
+below) and their foods — see "Tier 2 roster" below for what shipped, what
+was measured, and the two abilities still deferred. 21 tests in
+`envs/tests/test_sap2.py` (70 total with connect4 and tron-duel's own
+suites), plus a 2000-match random-legal-play fuzz run at the Python level
 (zero crashes, zero illegal forfeits, natural conclusions well inside the
 round cap — max turn seen was 16 of the 30-round `MAX_ROUNDS` bound) and
 a throughput measurement (~99,000 ticks/sec through the Python adapter —
-see "Measured" below).
+see "Measured" below; not remeasured post-Tier-2, since nothing about the
+per-tick cost changed, only table sizes).
 
 ## Verified against the shipped game, not against a wiki
 
@@ -52,19 +56,30 @@ Current state of that diff:
   agree on winner and on both surviving line-ups.
   `policy-clash-re-tools`'s `sap/difftest.py --holes`.
 - **Known remaining gaps**, now roster scope only:
-  - Tier-1 Pack1 (Turtle pack) only. The real game unlocks tiers 2–6 on
-    turns 3/5/7/9/11 and rolls those species (measured: a turn-5 shop
-    offered Badger/Crab/Swan/Hedgehog). sap2 keeps the tier gate but has
-    nothing above Tier 1 to put behind it — see the appendix.
-  - Three foods (Apple, Honey, Bread Crumbs). The real tier-1 rollable
-    food pool at Pack1 turn 1 is exactly Apple and Honey (measured over
-    750 rolled slots, uniform), which sap2 matches; later turns roll
-    higher-tier food sap2 does not have.
+  - Tier 1 + Tier 2 (Pack1). The real game unlocks tiers 2–6 on turns
+    3/5/7/9/11 and rolls those species (measured: a turn-5 shop offered
+    Badger/Crab/Swan/Hedgehog — Badger is Tier 3, still out of scope).
+    sap2 now has Tier 2 fully in the roll pool from turn 3 on; Tiers 3–6
+    still have nothing to put behind the gate — see the appendix.
+  - Two Tier-2 abilities are explicit no-ops, not silently wrong:
+    Hedgehog's Faint damage (needs a general "resolve every pet at ≤0
+    health, anywhere on either board, recursively" pass that the battle
+    core doesn't have yet — every call site currently assumes index 0)
+    and Spider's Faint summon (needs a Tier-3 roster to summon from).
+    Both pets are fully buyable/sellable/combinable; see
+    `sap2_battle_resolve_faint`'s own comments.
+  - Nine foods now: Apple, Honey, Bread Crumbs (Tier 1 - the tier-1
+    natural pool is still exactly Apple and Honey, measured over 750
+    rolled slots uniform, Bread Crumbs is Pigeon-only), plus Meat Bone,
+    Muffin, Sleeping Pill (Tier 2's natural pool from turn 3 on) and
+    Apple-Discount/Better Apple/Best Apple (Worm-only stock, never a
+    roll — see "Worm" below). Tiers 3–6's foods are still missing.
   - The level-up reward has no counterpart: measured, when a team pet's
-    level rises the shipped build prepends two `Reward` pets from a higher
-    tier to the shop (price 3, over capacity; buying either clears both, as
-    does a roll). With a Tier-1-only roster there is no higher tier to
-    offer, so this lands with Tier 2.
+    level rises the shipped build prepends two `Reward` pets from a
+    higher tier to the shop (price 3, over capacity; buying either clears
+    both, as does a roll). This needs a pet's level-up to be able to
+    reach into Tier 3, so it stays open even with Tier 2 shipped — it
+    lands with Tier 3.
 
 Eleven real divergences were found and fixed this way; they are called
 out where the rule is described below. One apparent twelfth turned out to
@@ -119,7 +134,7 @@ schedule and the level thresholds — are called out where they appear.
 | Gold | 10 once | 10 **every** round (does not carry over) |
 | Freeze | not modeled (no next turn to persist into) | real mechanic: frozen shop items persist into the next roll, in the leftmost slot(s) |
 | Win condition | one battle's Outcome | first to 10 trophies, or opponent's 5 lives hit 0 |
-| Roster | Tier 1 (10 pets, 2 foods) | Tier 1 (10 pets, 3 foods); Tiers 2–6 are follow-on phases |
+| Roster | Tier 1 (10 pets, 2 foods) | Tier 1 + Tier 2's rules (20 pets, 6 foods + 2 Worm-only Apples); only Tier 1 is *rollable* yet — see the roster note. Tiers 3–6 are follow-on phases |
 
 ## Match rules (measured from the shipped build)
 
@@ -248,6 +263,79 @@ build phase driven through the game's own resolver — see
   choice of two pets from the next tier up. With a Tier-1-only roster
   there is nothing to choose from, so the action space has no entry for
   it; it lands with the tier rollout in the appendix.
+
+## Tier 2: the roster, the pools, and what is still capped
+
+Every number in this section was read out of the shipped build through
+`policy-clash-re-tools`: `sap/ability_check.py` fires one named ability or
+food and reports the full observable delta, `sap/pool_probe.py` enumerates
+the roll pools out of the build's own filter closures, `sap/perk_probe.py`
+reads the perk model, and `sap/food_probe.py` re-measures the foods.
+
+- **The roll pool is the union of every species with `tier <= shop tier`,
+  uniform, with replacement.** Not per-tier weighted, not current-tier
+  only. Measured twice over: the build's own `RandomizeShop` filter
+  closure enumerated directly (cross-checked against
+  `BuildExtensions.GetAvailableMinionsByTier`), and 120k sampled slots
+  (χ²=23.2, df=29, p=0.77 against uniform at tier 3). Foods the same way:
+  tier 1 is {Apple, Honey}, tier 2 adds {Meat Bone, Muffin, Pill}, tier 3
+  adds {Cake, Garlic, Salad Bowl}.
+- **Prices are not uniform.** Every Pack1 food is 3 gold *except Pill,
+  which is 1*, so a single food price would be wrong the moment Tier 2
+  lands. A Worm-stocked Apple costs 2 — an absolute price, not a discount
+  off 3 — and Pigeon's crumbs are free. Price is therefore a property of
+  the **shop slot**, not of the food id, in both the state and the
+  observation.
+- **The refill is sorted by tier, descending — and by nothing else.**
+  Measured by calling the build's own comparator
+  (`BoardExtensions.<>c.<RandomizeShop>b__119_4` for pets, `b__119_7` for
+  foods) over a full pair matrix: attack, health, price, enum value and
+  pool position all compare equal within a tier. Ties keep draw order (a
+  stable tier-descending sort of the draw sequence predicted 11998/11998
+  real shops). Frozen items are **not** re-sorted: they stay packed left
+  in their existing relative order, and the refill is ordered only within
+  itself, so a shop with anything frozen is not globally tier-sorted.
+- **Buying out of the middle compacts the shop — a live Tier-1 divergence,
+  fixed.** The real shop is a `List<T>`: buying index 1 of
+  `[Giraffe, Giraffe, Rat, Worm]` leaves `[Giraffe, Rat, Worm]`, length 3.
+  sap2 blanked the slot in place, which left a hole the real game never
+  has and put every later slot behind the wrong action index. This one had
+  been wrong since the first version and survived 18 scripted shop checks
+  and a 24,000-action fuzzer, because the harness compared shop *contents*
+  and not shop *slots*; the harness now compares slot identity and has
+  scripted checks for compaction, for the tier-descending refill, and for
+  frozen items not being re-sorted.
+- **Perks carry no durability in Pack1.** All nine Pack1 perk templates
+  have `Durability = null`, so a perk here is an id and nothing else, and
+  a charge counter would have been fiction. (Melon's one-shot shield is a
+  `Shield` perk the combat pipeline removes on first absorb, and Melon is
+  Tier **6**, not Tier 3 as the rollout plan used to say. The perks that
+  do carry a durability — Lemon, Strawberry, Potato, White Okra — are all
+  Pack2/3/4.) The slot is strictly single-valued: a second food replaces
+  the first unconditionally, raising perk-lost then perk-gained.
+- **Meat Bone is a damage-time bonus, not a stat.** Flat +3 on every
+  attack (Hurt amounts 1→4, 2→5, 10→13), invisible in the displayed
+  attack, and it does **not** boost ability damage — a Mosquito with Meat
+  Bone still deals 1, a Hedgehog still deals 2.
+- **Muffin is entirely temporary**: +3/+3 in the temporary components,
+  permanent halves untouched, surviving the EndTurn and cleared by the
+  next StartTurn — the same deadline Horse's buff already uses here.
+- **Pill destroys the pet it is fed to**, for 1 gold, and the faint
+  triggers fire: an Ant given a Pill leaves a surviving friend permanently
+  +1/+1 before the body goes.
+- **Worm's Apples.** A Worm stocks Apple / Apple2 / Apple3 by level
+  (+1/+1, +2/+2, +3/+3 permanent), prepended at slot 0 at 2 gold, after
+  the turn's roll and ignoring the food capacity entirely. Apple2/Apple3
+  are unrollable (`Rollable = false`, empty pack list) and reachable only
+  this way. The stock does not survive a roll.
+
+**What is still capped, and why.** `SAP2_ROSTER_TIER = 2`: Tier 2 rolls,
+Tier 3 does not exist yet. The one hole behind that is Spider, whose faint
+summons a random *Tier 3* pet - it summons nothing here until Tier 3 lands.
+That is a deliberate trade, and the alternative was measured to be worse:
+with the roster capped at Tier 1 every turn-3-and-later shop drew from 10
+species where the real game draws from 20, so the whole shop distribution
+was wrong by construction rather than one species' faint effect.
 
 ## Episode shape
 
@@ -390,20 +478,107 @@ ticks/sec through the Python adapter (10.1 µs/tick) — roughly half
 figure predates the rules corrections; the layout has grown to 259 floats
 and 159 actions since, so treat it as a loose upper bound.
 
+## Tier 2 roster
+
+This section and the one above were written from two independent
+measurement passes over the same shipped build, merged: the pass above
+covers the pools, prices, perk model, compaction and ordering, this one
+covers the roster itself. Where they overlapped they agreed, with the
+exceptions called out below.
+
+Ground truth for every number came out of the build via
+`policy-clash-re-tools` — `roster.py`'s minion/spell dump for
+stats/prices, `ability_check.py` for every ability's per-level template
+and observed delta, `order_probe.py` for the orderings — not from
+`data/turtle_pack`'s wiki scrape and not from memory of the game's 2021
+balance. That mattered here in a way it had not for Tier 1: this build's
+Tier-2 foods are **Meat Bone, Muffin, Sleeping Pill**, not "Cupcake", and
+Worm's ability stocks an upgraded **Apple** rather than a "friend eats an
+apple" trigger. A wiki-first pass would have shipped both wrong.
+
+**Roster**: Crab 4/1, Flamingo 3/2, Hedgehog 4/2, Kangaroo 2/2, Peacock
+2/5, Rat 3/6, Snail 2/3, Spider 2/2, Swan 1/2, Worm 1/4 — all buyable,
+sellable, combinable, freezable, and rollable from turn 3 alongside
+Tier 1. Abilities, with the per-level amounts read off the cast template
+rather than the UI text:
+
+| Pet | Trigger | Effect (L1/L2/L3) |
+|---|---|---|
+| Crab | StartBattle | health += ceil(25/50/75% of the healthiest friend's TOTAL health), added not set, self excluded |
+| Flamingo | BeforeDeath | the two nearest friends behind +1/+1, +2/+2, +3/+3 (count fixed at two) |
+| Hedgehog | BeforeDeath | 2/4/6 damage to every other pet on BOTH sides, gated on at least one other pet existing |
+| Kangaroo | the friend ahead attacked | itself +1/+1, +2/+2, +3/+3 |
+| Peacock | Hurt (and survived) | itself +3/+6/+9 attack |
+| Rat | Death | 1/2/3 Dirty Rats, each 1/1 level 1, up front on the OPPONENT's side, trigger-disabled |
+| Snail | EndTurn, only after a LOSS | the three nearest friends ahead +1/+2/+3 attack (count fixed at three) |
+| Spider | Death | a random tier-3 pet at 2/2, 4/4, 6/6 — **deferred, see below** |
+| Swan | StartTurn | +1/+2/+3 gold, on top of the turn's allowance |
+| Worm | StartTurn | stocks Apple / Apple2 / Apple3 at 2 gold, prepended after the roll |
+
+**Deferred, not silently wrong**: Spider's summon needs a Tier-3 roster
+to draw from. It is the one Tier-2 rule this env does not implement, and
+it lands with Tier 3. Holding the whole tier back instead would be worse:
+capped at Tier 1, every turn-3-and-later shop is wrong by construction.
+
+Two claims from the first pass that the second corrected:
+
+- **Worm's stock is an ordinary Apple at a slot price of 2**, not a
+  separate discounted-Apple species. The build's `Catalogue.Price = 2` is
+  an absolute price on the stocked item, so price is a property of the
+  shop SLOT (a rolled Apple beside it still costs 3). Only the *upgraded*
+  Apples are distinct ids, because they are distinct items: Apple2 and
+  Apple3 give +2/+2 and +3/+3 and are unrollable.
+- **Hedgehog's splash needed the general fix, not a sweep.** Its damage
+  really can faint pets anywhere on either board, and the first
+  implementation of that was a post-hoc sweep for anyone left at ≤0
+  health. What the differential harness then showed is that the actual
+  defect was narrower and worse: faints were being resolved by array
+  INDEX after an ability had already shifted the line, so a Rat's
+  opponent-side summon could make a removal delete the wrong body and
+  leave a corpse fighting on at negative health. Bodies now carry a
+  stable id and every resolution re-finds itself. That fixed 80 of the 86
+  divergent Tier-2 boards; cross-pet faint order is attack-descending
+  with a coin flip on ties, which is measured, rather than board order,
+  which is not.
+
+Verified: 67 env tests, 24/24 scripted shop checks, 200 fuzz episodes at
+turn 1 and 120 at turn 3 with no divergence, 300/300 Tier-1 exact
+surviving line-ups, and Tier-2 exact survivors down from 86/200
+mismatching to 6/300 — the tail is under investigation and is recorded
+here rather than rounded off.
+
 ## Appendix: roster rollout plan
 
 1. **Tier 1 — done.** Match engine + existing 10 pets/3 foods, verified
    against the shipped build (18 tests, `envs/tests/test_sap2.py`, plus
    policy-clash-re-tools' differential suites).
-2. **Tier 2** (Snail, Crab, Swan, Rat, Hedgehog, Peacock, Flamingo, Worm,
-   Kangaroo, Spider + Cupcake, Meat Bone, Sleeping Pill): next phase.
-   Introduces the `Hurt` trigger for the first time (Peacock).
-3. **Tier 3** (Dodo, Badger, Dolphin, Giraffe, Elephant, Camel, Rabbit,
-   Ox, Dog, Sheep + Cake\*, Salad Bowl, Garlic): introduces
+2. **Tier 2 — done**, see "Tier 2 roster" above. Snail, Crab, Swan, Rat,
+   Hedgehog, Peacock, Flamingo, Worm, Kangaroo, Spider, plus Meat Bone/
+   Muffin/Sleeping Pill and Worm's Apple-Discount/Apple2/Apple3. Spider's
+   own battle-phase ability is an explicit deferred no-op,
+   not shipped wrong. Introduced `Attack`, `Hurt`, `StartTurn` and
+   `EndTurn`-conditional, none of which `sap-v1`'s taxonomy had.
+3. **Tier 3** — roster confirmed via `policy-clash-re-tools` directly
+   (`roster.py`'s dump, same method as Tier 2, not `data/turtle_pack`'s
+   wiki scrape): Dodo, Badger, Dolphin, Giraffe, Elephant, Camel, Rabbit,
+   Ox, Dog, Sheep + Birthday Cake, Salad Bowl, Garlic. **This build's
+   Turtle Pack Tier 3 DOES include Birthday Cake** - contradicting this
+   doc's own earlier note (below, now wrong and left crossed out rather
+   than silently deleted) that it was scraped as absent; that scrape was
+   evidently stale or wiki-sourced rather than measured. ~~Cake is
+   confirmed not currently in Turtle Pack per `data/turtle_pack`'s own
+   scrape notes — Salad Bowl and Garlic only.~~ Not started: needs a
+   general recursive "damage arbitrary positions, resolve what that
+   kills" primitive of its own (Badger's Faint ability hits BOTH the
+   friend behind it and whatever is currently on the opposing front line,
+   for 50/100/150% of Badger's own attack - the same class of problem
+   Hedgehog's Faint damage was, and `sap2_battle_resolve_pending_faints`
+   should cover it, but this has not been tried). Introduces
    `FriendAheadFaints`/`FriendAheadAttacks`-style positional triggers
-   (Camel, Giraffe, Ox) not in `sap-v1`'s taxonomy at all yet. \*Cake is
-   confirmed **not** currently in Turtle Pack per `data/turtle_pack`'s own
-   scrape notes — Salad Bowl and Garlic only.
+   (Camel, Giraffe, Ox) not in `sap-v1`'s taxonomy at all yet, and at
+   least one perk beyond Honey/Meat Bone (Garlic's, and Birthday Cake's -
+   neither one's actual mechanic has been looked up yet, only that both
+   are `EffectGivePerk`).
 4. **Tier 4** (Skunk, Hippo, Bison, Blowfish, Turtle, Squirrel, Penguin,
    Deer, Whale, Parrot + Pear, Canned Food, Bread): introduces `KnockOut`
    (Hippo) and permanent shop-wide buffs (Canned Food).
@@ -415,18 +590,47 @@ and 159 actions since, so treat it as a loose upper bound.
    `BeforeAttack`/`AfterAttack` (Boar, Elephant already tier 3 — Boar is
    the tier-6 case) and `Fly`'s bounded-trigger-count ability.
 
-Each phase: port abilities from `data/turtle_pack/pets.json`, extend the
-trigger taxonomy only as far as that tier's roster actually needs (same
-rule `sap-v1` followed — it implemented only `FAINT`/`SELL`/`BUY`/
-`LEVELUP`/`FRIEND_SUMMONED`/`START_OF_BATTLE`, the subset Tier 1 uses, not
-the full taxonomy speculatively), write tests before calling it done, and
-benchmark. No tier's implementation blocks reporting the previous one as
-finished.
+Each phase: generate the tier's rows from `sap/spec.py`'s dump of the
+shipped build's own ability templates (not from a wiki or a scrape),
+extend the trigger/selector/effect taxonomy only as far as that tier's
+roster actually needs, drive each new ability in both engines with
+`policy-clash-re-tools`' `sap/ability_check.py`, and re-run the battle and
+shop differential suites before calling it done. No tier's implementation
+blocks reporting the previous one as finished.
+
+## Abilities are data, not code
+
+The shipped build does not write an ability as code either: each one is an
+`Ability` object carrying a Trigger, an Aim (target selector) and a list of
+AbilityPairs (condition + effect), looked up per level through
+`AbilityUtility.GetTemplate`. `sap2.h` mirrors that shape - a
+`Sap2Ability` table row per species (`SAP2_ABILITY`) and per perk
+(`SAP2_PERK_ABILITY`), read by two interpreters:
+
+- `sap2_fire` / `sap2_fire_watchers` resolve a row against a `SapSeat2` -
+  the shop phase's fixed slots and holes.
+- `sap2_battle_fire` / `sap2_battle_resolve_faint` / `sap2_battle_start`
+  resolve the same row against a `SapBattle2` - a packed line that mutates
+  as bodies leave.
+
+The two containers are genuinely different, so selectors and effects are
+implemented twice; the data describing each ability lives in one place.
+All ten Tier-1 pets plus the Honey perk are rows. `sap/spec.py --inventory`
+says what the rest of Pack1 needs on top: 17 trigger families, 18 effect
+kinds, 9 target selectors, and no conditions at all.
+
+Two families exist in the enum with no Tier-1 listener and therefore no
+firing point yet: `SAP2_TRIG_HURT`, `SAP2_TRIG_ATTACK` and
+`SAP2_TRIG_KILL`. Their *order* relative to the exchange and to each other
+is not measurable on this roster - nothing listens - so the hooks are
+deliberately absent rather than guessed. Tier 2's Peacock (`Hurt`) is the
+first pet that can measure them.
 
 ## See also
 
 - [colin-cannell/SAP_Clone](https://github.com/colin-cannell/SAP_Clone) — the
   companion project this env was designed alongside: `SAP_clone.md` §2
-  (turn structure) and the now-resolved multi-round-meta open question,
-  and `data/turtle_pack/pets.json` — the full 61-pet, 17-food dataset
-  every later tier phase in the appendix above ports from.
+  (turn structure) and the now-resolved multi-round-meta open question.
+  Its `data/turtle_pack/pets.json` is a community scrape; later tiers port
+  from `policy-clash-re-tools`' `sap/spec.py` instead, which reads the
+  shipped build's own templates (60 pets, 18 foods, 186 templates).

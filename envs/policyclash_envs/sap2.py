@@ -31,6 +31,7 @@ NUM_ACTIONS = _sap2.NUM_ACTIONS
 MAX_TICKS = _sap2.MAX_TICKS
 TEAM_SLOTS = _sap2.TEAM_SLOTS
 MAX_SHOP_PETS = _sap2.MAX_SHOP_PETS
+ROSTER_TIER = _sap2.ROSTER_TIER  # how far the implemented roster reaches
 MAX_SHOP_FOOD = _sap2.MAX_SHOP_FOOD  # the largest food shop a ROLL fills
 FOOD_SLOTS = _sap2.FOOD_SLOTS  # array width: Pigeon prepends up to 3 free crumbs
 MAX_LEVEL = _sap2.MAX_LEVEL
@@ -38,7 +39,8 @@ MAX_EXP = _sap2.MAX_EXP  # a pet stops stacking here (LevelRequirements[-1])
 MAX_STATS = _sap2.MAX_STATS  # BoardConstants.MaxStats - attack and health cap
 NUM_PERKS = _sap2.NUM_PERKS  # width of a team slot's perk one-hot
 PERK_NONE = _sap2.PERK_NONE
-PERK_HONEY = _sap2.PERK_HONEY  # the only perk this roster's foods produce
+PERK_HONEY = _sap2.PERK_HONEY
+PERK_MEAT_BONE = _sap2.PERK_MEAT_BONE  # Tier 2's Meat Bone
 
 # Layout, for consumers that decode features or build actions. Derived from
 # the C core rather than copied, so a widened block cannot leave a stale
