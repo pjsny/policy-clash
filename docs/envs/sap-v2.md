@@ -119,7 +119,7 @@ schedule and the level thresholds — are called out where they appear.
 | Gold | 10 once | 10 **every** round (does not carry over) |
 | Freeze | not modeled (no next turn to persist into) | real mechanic: frozen shop items persist into the next roll, in the leftmost slot(s) |
 | Win condition | one battle's Outcome | first to 10 trophies, or opponent's 5 lives hit 0 |
-| Roster | Tier 1 (10 pets, 2 foods) | Tier 1 (10 pets, 3 foods); Tiers 2–6 are follow-on phases |
+| Roster | Tier 1 (10 pets, 2 foods) | Tier 1 + Tier 2's rules (20 pets, 6 foods + 2 Worm-only Apples); only Tier 1 is *rollable* yet — see the roster note. Tiers 3–6 are follow-on phases |
 
 ## Match rules (measured from the shipped build)
 
@@ -248,6 +248,81 @@ build phase driven through the game's own resolver — see
   choice of two pets from the next tier up. With a Tier-1-only roster
   there is nothing to choose from, so the action space has no entry for
   it; it lands with the tier rollout in the appendix.
+
+## Tier 2: the roster, the pools, and what is still capped
+
+Every number in this section was read out of the shipped build through
+`policy-clash-re-tools`: `sap/ability_check.py` fires one named ability or
+food and reports the full observable delta, `sap/pool_probe.py` enumerates
+the roll pools out of the build's own filter closures, `sap/perk_probe.py`
+reads the perk model, and `sap/food_probe.py` re-measures the foods.
+
+- **The roll pool is the union of every species with `tier <= shop tier`,
+  uniform, with replacement.** Not per-tier weighted, not current-tier
+  only. Measured twice over: the build's own `RandomizeShop` filter
+  closure enumerated directly (cross-checked against
+  `BuildExtensions.GetAvailableMinionsByTier`), and 120k sampled slots
+  (χ²=23.2, df=29, p=0.77 against uniform at tier 3). Foods the same way:
+  tier 1 is {Apple, Honey}, tier 2 adds {Meat Bone, Muffin, Pill}, tier 3
+  adds {Cake, Garlic, Salad Bowl}.
+- **Prices are not uniform.** Every Pack1 food is 3 gold *except Pill,
+  which is 1*, so a single food price would be wrong the moment Tier 2
+  lands. A Worm-stocked Apple costs 2 — an absolute price, not a discount
+  off 3 — and Pigeon's crumbs are free. Price is therefore a property of
+  the **shop slot**, not of the food id, in both the state and the
+  observation.
+- **The refill is sorted by tier, descending — and by nothing else.**
+  Measured by calling the build's own comparator
+  (`BoardExtensions.<>c.<RandomizeShop>b__119_4` for pets, `b__119_7` for
+  foods) over a full pair matrix: attack, health, price, enum value and
+  pool position all compare equal within a tier. Ties keep draw order (a
+  stable tier-descending sort of the draw sequence predicted 11998/11998
+  real shops). Frozen items are **not** re-sorted: they stay packed left
+  in their existing relative order, and the refill is ordered only within
+  itself, so a shop with anything frozen is not globally tier-sorted.
+- **Buying out of the middle compacts the shop — a live Tier-1 divergence,
+  fixed.** The real shop is a `List<T>`: buying index 1 of
+  `[Giraffe, Giraffe, Rat, Worm]` leaves `[Giraffe, Rat, Worm]`, length 3.
+  sap2 blanked the slot in place, which left a hole the real game never
+  has and put every later slot behind the wrong action index. This one had
+  been wrong since the first version and survived 18 scripted shop checks
+  and a 24,000-action fuzzer, because the harness compared shop *contents*
+  and not shop *slots*; the harness now compares slot identity and has
+  scripted checks for compaction, for the tier-descending refill, and for
+  frozen items not being re-sorted.
+- **Perks carry no durability in Pack1.** All nine Pack1 perk templates
+  have `Durability = null`, so a perk here is an id and nothing else, and
+  a charge counter would have been fiction. (Melon's one-shot shield is a
+  `Shield` perk the combat pipeline removes on first absorb, and Melon is
+  Tier **6**, not Tier 3 as the rollout plan used to say. The perks that
+  do carry a durability — Lemon, Strawberry, Potato, White Okra — are all
+  Pack2/3/4.) The slot is strictly single-valued: a second food replaces
+  the first unconditionally, raising perk-lost then perk-gained.
+- **Meat Bone is a damage-time bonus, not a stat.** Flat +3 on every
+  attack (Hurt amounts 1→4, 2→5, 10→13), invisible in the displayed
+  attack, and it does **not** boost ability damage — a Mosquito with Meat
+  Bone still deals 1, a Hedgehog still deals 2.
+- **Muffin is entirely temporary**: +3/+3 in the temporary components,
+  permanent halves untouched, surviving the EndTurn and cleared by the
+  next StartTurn — the same deadline Horse's buff already uses here.
+- **Pill destroys the pet it is fed to**, for 1 gold, and the faint
+  triggers fire: an Ant given a Pill leaves a surviving friend permanently
+  +1/+1 before the body goes.
+- **Worm's Apples.** A Worm stocks Apple / Apple2 / Apple3 by level
+  (+1/+1, +2/+2, +3/+3 permanent), prepended at slot 0 at 2 gold, after
+  the turn's roll and ignoring the food capacity entirely. Apple2/Apple3
+  are unrollable (`Rollable = false`, empty pack list) and reachable only
+  this way. The stock does not survive a roll.
+
+**What is still capped, and why.** `SAP2_ROSTER_TIER` holds the *rollable*
+roster at Tier 1 even though the engine now carries Tier 2's rules. The
+blocker is Spider: its ability summons a random **Tier 3** pet as a
+2/2 (4/4, 6/6 by level), drawn uniformly from the ten Pack1 tier-3
+rollables, and those species do not exist here yet. Offering 19 of the 20
+Tier-2 species instead would make every pet offer's distribution wrong at
+tier 2 and up; offering all 20 with a Spider that summons nothing would
+make battles wrong. So Tier 2's rules land first, verified board by board
+against the shipped build, and the cap lifts with Tier 3.
 
 ## Episode shape
 

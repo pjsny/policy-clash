@@ -36,7 +36,7 @@ from policyclash_envs.sap2 import (
 HORSE_SPECIES = 6         # sap2.h's species ids, Tier-1 Pack1 roster
 PIGEON_SPECIES = 10
 HONEY_FOOD = 2            # SAP2_HONEY
-BREAD_CRUMBS_FOOD = 3     # SAP2_BREAD_CRUMBS
+BREAD_CRUMBS_FOOD = 6     # SAP2_BREAD_CRUMBS - Tier 2 foods took 3/4/5
 
 ENV_ID = "sap2-v1"
 
@@ -53,6 +53,19 @@ REPOSITION_BASE = ACT_REPOSITION_BASE
 BUY_FOOD_BASE = ACT_BUY_FOOD_BASE
 FREEZE_PET_BASE = ACT_FREEZE_PET_BASE
 FREEZE_FOOD_BASE = ACT_FREEZE_FOOD_BASE
+
+
+def slot_of(f: np.ndarray, species: int) -> int:
+    """The shop slot currently holding `species`.
+
+    Buying compacts the shop (measured - the real shop is a List<T>), so a
+    slot index read before a buy does not survive it. Tests that buy twice
+    re-resolve the second slot through this.
+    """
+    for s in range(MAX_SHOP_PETS):
+        if shop_pet_species(f, s) == species:
+            return s
+    raise AssertionError(f"species {species} is not in the shop")
 
 
 def buy(shop_slot: int, position: int) -> int:
@@ -80,51 +93,70 @@ def env():
     return make(ENV_ID)
 
 
+# Every field offset below is derived from the env's own widths, not
+# typed in: the species one-hot has grown twice while matching the
+# shipped roster (10 pets -> 20 plus tokens) and the food block gained a
+# price, and a hardcoded 11 or 13 here shows up as a nonsense failure
+# somewhere unrelated.
+NUM_SPECIES = TEAM_SLOT_FLOATS - (2 + MAX_LEVEL + 1 + NUM_PERKS)  # team one-hot
+NUM_SHOP_SPECIES_ONEHOT = SHOP_PET_SLOT_FLOATS - 2                # shop one-hot
+NUM_FOODS_ONEHOT = SHOP_FOOD_SLOT_FLOATS - 2                      # food one-hot
+
+
 def team_species(f: np.ndarray, slot: int) -> int:
     base = TEAM_BASE + slot * TEAM_SLOT_WIDTH
-    return int(np.argmax(f[base : base + 13]))
+    return int(np.argmax(f[base : base + NUM_SPECIES]))
 
 
 def team_attack(f: np.ndarray, slot: int) -> float:
-    return f[TEAM_BASE + slot * TEAM_SLOT_WIDTH + 13]
+    return f[TEAM_BASE + slot * TEAM_SLOT_WIDTH + NUM_SPECIES]
 
 
 def team_health(f: np.ndarray, slot: int) -> float:
-    return f[TEAM_BASE + slot * TEAM_SLOT_WIDTH + 14]
+    return f[TEAM_BASE + slot * TEAM_SLOT_WIDTH + NUM_SPECIES + 1]
 
 
 def team_level(f: np.ndarray, slot: int) -> int:
-    base = TEAM_BASE + slot * TEAM_SLOT_WIDTH + 15
+    base = TEAM_BASE + slot * TEAM_SLOT_WIDTH + NUM_SPECIES + 2
     return int(np.argmax(f[base : base + MAX_LEVEL])) + 1
 
 
 def team_exp(f: np.ndarray, slot: int) -> int:
-    return int(f[TEAM_BASE + slot * TEAM_SLOT_WIDTH + 18])
+    return int(f[TEAM_BASE + slot * TEAM_SLOT_WIDTH + NUM_SPECIES + 2 + MAX_LEVEL])
 
 
 def team_perk(f: np.ndarray, slot: int) -> int:
-    base = TEAM_BASE + slot * TEAM_SLOT_WIDTH + 19
+    base = TEAM_BASE + slot * TEAM_SLOT_WIDTH + NUM_SPECIES + 3 + MAX_LEVEL
     return int(np.argmax(f[base : base + NUM_PERKS]))
 
 
 def shop_pet_species(f: np.ndarray, slot: int) -> int:
     base = SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH
-    return int(np.argmax(f[base : base + 11]))
+    return int(np.argmax(f[base : base + NUM_SHOP_SPECIES_ONEHOT]))
+
+
+def shop_pet_hp_bonus(f: np.ndarray, slot: int) -> float:
+    return f[SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH + NUM_SHOP_SPECIES_ONEHOT]
 
 
 def shop_pet_frozen(f: np.ndarray, slot: int) -> bool:
     base = SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH
-    return bool(f[base + 12])
+    return bool(f[base + NUM_SHOP_SPECIES_ONEHOT + 1])
 
 
 def shop_food_species(f: np.ndarray, slot: int) -> int:
     base = SHOP_FOOD_BASE + slot * SHOP_FOOD_SLOT_WIDTH
-    return int(np.argmax(f[base : base + 4]))
+    return int(np.argmax(f[base : base + NUM_FOODS_ONEHOT]))
 
 
 def shop_food_frozen(f: np.ndarray, slot: int) -> bool:
     base = SHOP_FOOD_BASE + slot * SHOP_FOOD_SLOT_WIDTH
-    return bool(f[base + 4])
+    return bool(f[base + NUM_FOODS_ONEHOT])
+
+
+def shop_food_price(f: np.ndarray, slot: int) -> float:
+    base = SHOP_FOOD_BASE + slot * SHOP_FOOD_SLOT_WIDTH
+    return f[base + NUM_FOODS_ONEHOT + 1]
 
 
 def gold(f: np.ndarray) -> float:
@@ -222,7 +254,10 @@ def test_dropping_a_pet_on_an_occupied_slot_inserts_and_shifts(env):
         result = probe.step(buy(0, 2), END_TURN)
         first = team_species(result.observations[0].features, 2)
         seat1 = IGNORED if result.observations[1] is None else END_TURN
-        result = probe.step(buy(1, 2), seat1)  # different species, same position
+        # Buying compacts the shop, so the pet that was in slot 1 is now
+        # in slot 0 - measured, the real shop is a List<T>.
+        assert shop_pet_species(result.observations[0].features, 0) == species[1]
+        result = probe.step(buy(0, 2), seat1)  # different species, same position
         f = result.observations[0].features
         assert team_species(f, 3) == first, "the sitting pet slid back"
         assert team_species(f, 2) == species[1]
@@ -250,7 +285,8 @@ def test_buying_a_copy_onto_its_twin_stacks_in_one_action(env):
         seat1 = IGNORED if result.observations[1] is None else END_TURN
         before = result.observations[0].features
         assert team_level(before, 0) == 1
-        result = probe.step(buy(j, 0), seat1)  # dropped on its own twin
+        # the first buy compacted the shop, so j moved down one slot
+        result = probe.step(buy(j - 1 if j > i else j, 0), seat1)  # onto its own twin
         f = result.observations[0].features
         assert team_species(f, 0) == species[i]
         assert all(team_species(f, s) == 0 for s in range(1, 5)), "one pet, not two"
@@ -317,14 +353,15 @@ def test_levelling_follows_the_shipped_exp_table(env):
             continue
         i, j = pair
         result = probe.step(buy(i, 0), END_TURN)
-        result = probe.step(buy(j, 1), IGNORED if result.observations[1] is None else END_TURN)
         f = result.observations[0].features
-        base = TEAM_BASE
+        result = probe.step(
+            buy(slot_of(f, species[j]), 1),
+            IGNORED if result.observations[1] is None else END_TURN,
+        )
         assert result.observations[0].legal_actions[COMBINE_BASE + 0]  # slots 0,1 stack
         result = probe.step(COMBINE_BASE + 0, IGNORED if result.observations[1] is None else END_TURN)
         f = result.observations[0].features
-        level_one_hot = f[base + 13 + 2 : base + 13 + 2 + MAX_LEVEL]
-        assert int(np.argmax(level_one_hot)) == 0, "one stack is exp 1, still level 1"
+        assert team_level(f, 0) == 1, "one stack is exp 1, still level 1"
         assert team_exp(f, 0) == 1, "the exp counter is observable, not just the level"
         return
     pytest.fail("no seed in 200 offered a duplicate species in the turn-1 shop")
@@ -368,8 +405,11 @@ def test_horses_buff_counts_in_this_rounds_battle_and_expires_next_turn(env):
             # Seat 1 buys the same two pets in both plays, so seat 0's
             # ordering is the only thing that differs.
             result = probe.step(buy(*first), buy(0, 0))
-            seat1 = IGNORED if result.observations[1] is None else buy(1, 1)
-            result = probe.step(buy(*second), seat1)
+            f0 = result.observations[0].features
+            # The first buy compacted both shops, so the second slot is
+            # re-resolved by species rather than reused.
+            seat1 = IGNORED if result.observations[1] is None else buy(0, 1)
+            result = probe.step(buy(slot_of(f0, shop[second[0]]), second[1]), seat1)
             plays[name] = (result.observations[0].features, end_one_round(probe, result))
 
         buffed_obs, buffed_result = plays["buffed"]
@@ -413,7 +453,9 @@ def test_a_stack_keeps_the_honey_perk_from_the_absorbed_copy(env):
         i, j = pair
         result = probe.step(buy(i, 0), END_TURN)  # 3g
         seat1 = IGNORED if result.observations[1] is None else END_TURN
-        result = probe.step(buy(j, 1), seat1)  # 6g
+        f = result.observations[0].features  # the buy compacted the shop
+        result = probe.step(buy(slot_of(f, species[j]), 1), seat1)  # 6g
+        seat1 = IGNORED if result.observations[1] is None else END_TURN
         result = probe.step(buy_food(0, 1), seat1)  # 9g, Honey onto the second copy
         f = result.observations[0].features
         assert team_perk(f, 0) == PERK_NONE
@@ -459,8 +501,11 @@ def test_a_stack_keeps_a_temporary_buff_from_either_copy(env):
         i, j = pair
         result = probe.step(buy(i, 0), END_TURN)  # the unbuffed twin
         seat1 = IGNORED if result.observations[1] is None else END_TURN
-        result = probe.step(buy(horse, 4), seat1)
-        result = probe.step(buy(j, 1), seat1)  # bought with the Horse present
+        f = result.observations[0].features  # each buy compacts the shop
+        result = probe.step(buy(slot_of(f, HORSE_SPECIES), 4), seat1)
+        seat1 = IGNORED if result.observations[1] is None else END_TURN
+        f = result.observations[0].features
+        result = probe.step(buy(slot_of(f, species[j]), 1), seat1)  # with the Horse present
         f = result.observations[0].features
         buffed = team_attack(f, 1)
         plain = team_attack(f, 0)
@@ -534,13 +579,15 @@ def test_pigeon_crumbs_are_unfrozen_and_a_roll_clears_them(env):
     pytest.fail("no seed in 200 offered a Pigeon in the turn-1 shop")
 
 
-def test_the_food_shop_is_wide_enough_for_a_team_of_pigeons(env):
-    """The array is sized for the worst case the real game allows - a full
-    team of level-3 Pigeons sold in one phase - because measured against
-    the shipped build nothing is evicted and every slot stays buyable."""
+def test_the_food_shop_is_wide_enough_for_its_worst_case(env):
+    """The array is sized for the worst case the real game allows, because
+    measured against the shipped build nothing is ever evicted and every
+    slot stays buyable: the largest rolled capacity, plus a team of
+    level-3 Pigeons' crumbs (frozen, so they survive the next roll), plus
+    a team of Worms' Apples prepended the turn after."""
     from policyclash_envs.sap2 import MAX_LEVEL as _lvl
 
-    assert FOOD_SLOTS == 2 + TEAM_SLOTS * _lvl
+    assert FOOD_SLOTS == 2 + TEAM_SLOTS * _lvl + TEAM_SLOTS
     # And the action space reaches all of them.
     assert ACT_FREEZE_PET_BASE == ACT_BUY_FOOD_BASE + FOOD_SLOTS * TEAM_SLOTS
     assert NUM_ACTIONS == ACT_FREEZE_FOOD_BASE + FOOD_SLOTS

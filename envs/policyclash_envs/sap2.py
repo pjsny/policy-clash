@@ -38,7 +38,8 @@ MAX_EXP = _sap2.MAX_EXP  # a pet stops stacking here (LevelRequirements[-1])
 MAX_STATS = _sap2.MAX_STATS  # BoardConstants.MaxStats - attack and health cap
 NUM_PERKS = _sap2.NUM_PERKS  # width of a team slot's perk one-hot
 PERK_NONE = _sap2.PERK_NONE
-PERK_HONEY = _sap2.PERK_HONEY  # the only perk this roster's foods produce
+PERK_HONEY = _sap2.PERK_HONEY
+PERK_MEAT_BONE = _sap2.PERK_MEAT_BONE  # Tier 2's Meat Bone
 
 # Layout, for consumers that decode features or build actions. Derived from
 # the C core rather than copied, so a widened block cannot leave a stale
