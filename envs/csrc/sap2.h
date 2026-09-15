@@ -432,29 +432,216 @@ static inline void sap2_clamp_stats(SapPet2 *p) {
     }
 }
 
-/* Horse's on-summon buff - the one temporary effect in this roster.
+/* -------------------------------------------------------------------- */
+/* Abilities, as data
  *
- * Measured from the shipped build via policy-clash-re-tools: Horse's
- * ability effect carries Duration = Temp(1), while Ant, Otter, Beaver,
- * Duck and Fish all carry Duration = Perm(0); and the deadline that
- * Temp(1) names is the START OF THE NEXT TURN, not the end of battle -
- * a Horse plus a freshly bought Ant showed Ant 3/2 for all of turn 1,
- * including that turn's battle, and 2/2 from turn 2 onwards.
+ * The shipped build does not write an ability as code either: every one is
+ * an `Ability` object carrying a Trigger, an Aim (target selector) and a
+ * list of (condition, effect) pairs, looked up per level through
+ * `AbilityUtility.GetTemplate`. policy-clash-re-tools' sap/spec.py dumps
+ * that graph for all 186 Turtle-pack ability templates, and the table
+ * below is the same shape, narrowed to what this roster uses.
  *
- * So the buff goes into temp_attack, where the battle still reads it
- * (sap2_battle_load goes through sap2_pet_attack) and sap2_resolve_round's
- * round advance - which runs after that battle - clears it. */
-static inline void sap2_fire_friend_summoned(SapSeat2 *s, int slot) {
+ * Writing it this way is not tidiness: the remaining five tiers are 50
+ * pets built from 17 trigger families, 18 effects and 9 selectors, so the
+ * machinery is the work and each pet after it is a row.
+ *
+ * Amount conventions, so one row can serve all three levels:
+ *   SAP2_BY_LEVEL       the pet's level
+ *   SAP2_BY_LEVEL_LESS1 the pet's level minus one (Fish's level-up)
+ * anything >= 0 is a flat amount. */
+#define SAP2_BY_LEVEL (-1)
+#define SAP2_BY_LEVEL_LESS1 (-2)
+
+enum {
+    SAP2_TRIG_NONE = 0,
+    SAP2_TRIG_PLAY,          /* this pet was bought onto the team */
+    SAP2_TRIG_SELL,          /* this pet was sold */
+    SAP2_TRIG_BEFORE_SELL,   /* ditto, but before the gold is paid out */
+    SAP2_TRIG_LEVELUP,       /* this pet's level just went up */
+    SAP2_TRIG_SUMMON         /* a FRIEND was summoned - fires on the watcher */
+};
+
+enum {
+    SAP2_SEL_NONE = 0,
+    SAP2_SEL_SELF,
+    SAP2_SEL_RANDOM_FRIEND,  /* uniform over living friends, excluding self */
+    SAP2_SEL_TRIGGER_TARGET, /* the pet the trigger was about (Horse) */
+    SAP2_SEL_SHOP_PETS,      /* every occupied shop pet slot */
+    SAP2_SEL_SHOP_FOOD       /* the food shop, as a list to prepend to */
+};
+
+enum {
+    SAP2_EFF_NONE = 0,
+    SAP2_EFF_BUFF,           /* attack/health onto the target, perm or temp */
+    SAP2_EFF_BUFF_SHOP,      /* health onto shop pets, carried by the buy */
+    SAP2_EFF_GAIN_GOLD,
+    SAP2_EFF_ADD_SHOP_SPELL  /* prepend `count` copies of `param`, free */
+};
+
+enum { SAP2_DUR_PERM = 0, SAP2_DUR_TEMP = 1 };
+
+typedef struct {
+    uint8_t trigger;
+    uint8_t selector;
+    uint8_t effect;
+    int8_t count;   /* how many targets */
+    int8_t attack;  /* amount, or SAP2_BY_LEVEL* */
+    int8_t health;
+    uint8_t param;  /* species / food id, effect-dependent */
+    uint8_t duration;
+} Sap2Ability;
+
+/* One row per species. Battle-phase abilities (Ant, Cricket, Mosquito, and
+ * the Honey perk) still live in the battle section: the battle runs on a
+ * throwaway SapBattle2 copy rather than on SapSeat2, so they need the same
+ * treatment applied to that container - the next slice of this port. */
+static const Sap2Ability SAP2_ABILITY[SAP2_NUM_ALL_SPECIES] = {
+    /* EMPTY   */ {0},
+    /* ANT     */ {0}, /* battle: faint */
+    /* BEAVER  */ {SAP2_TRIG_SELL, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
+                   2, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_PERM},
+    /* CRICKET */ {0}, /* battle: faint */
+    /* DUCK    */ {SAP2_TRIG_SELL, SAP2_SEL_SHOP_PETS, SAP2_EFF_BUFF_SHOP,
+                   0, 0, SAP2_BY_LEVEL, 0, SAP2_DUR_PERM},
+    /* FISH    */ {SAP2_TRIG_LEVELUP, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
+                   2, SAP2_BY_LEVEL_LESS1, SAP2_BY_LEVEL_LESS1, 0, SAP2_DUR_PERM},
+    /* HORSE   */ {SAP2_TRIG_SUMMON, SAP2_SEL_TRIGGER_TARGET, SAP2_EFF_BUFF,
+                   1, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_TEMP},
+    /* MOSQUITO*/ {0}, /* battle: start of battle */
+    /* OTTER   */ {SAP2_TRIG_PLAY, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
+                   SAP2_BY_LEVEL, 0, 1, 0, SAP2_DUR_PERM},
+    /* PIG     */ {SAP2_TRIG_BEFORE_SELL, SAP2_SEL_SELF, SAP2_EFF_GAIN_GOLD,
+                   1, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_PERM},
+    /* PIGEON  */ {SAP2_TRIG_SELL, SAP2_SEL_SHOP_FOOD, SAP2_EFF_ADD_SHOP_SPELL,
+                   SAP2_BY_LEVEL, 0, 0, SAP2_BREAD_CRUMBS, SAP2_DUR_PERM},
+    /* C.TOKEN */ {0},
+    /* BEE     */ {0}
+};
+
+/* Resolves an amount against the firing pet's level. */
+static inline int sap2_amount(int8_t spec, int level) {
+    if (spec == SAP2_BY_LEVEL) {
+        return level;
+    }
+    if (spec == SAP2_BY_LEVEL_LESS1) {
+        return level - 1;
+    }
+    return spec;
+}
+
+/* What a shop-phase ability fires against: the seat, the pet firing it, and
+ * (for SAP2_TRIG_SUMMON) the pet the trigger was about. */
+typedef struct {
+    SapSeat2 *seat;
+    int self_slot;     /* the firing pet, or -1 once it has left the team */
+    int trigger_slot;  /* the pet the trigger concerns */
+    int level;         /* the firing pet's level */
+} Sap2Ctx;
+
+static inline void sap2_apply_buff(SapPet2 *p, int attack, int health, int duration) {
+    if (duration == SAP2_DUR_TEMP) {
+        int ta = (int)p->temp_attack + attack, th = (int)p->temp_health + health;
+        if (ta > SAP2_MAX_STATS) {
+            ta = SAP2_MAX_STATS; /* the sum is clamped again on read */
+        }
+        if (th > SAP2_MAX_STATS) {
+            th = SAP2_MAX_STATS;
+        }
+        p->temp_attack = (int8_t)ta;
+        p->temp_health = (int8_t)th;
+        return;
+    }
+    p->attack = (int8_t)(p->attack + attack);
+    p->health = (int8_t)(p->health + health);
+    sap2_clamp_stats(p);
+}
+
+/* Fires `species`'s ability if it listens for `trigger`. Shop phase only -
+ * see the table's comment. */
+static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
+    const Sap2Ability *ab = &SAP2_ABILITY[species];
+    if (ab->trigger != trigger || ab->effect == SAP2_EFF_NONE) {
+        return;
+    }
+    SapSeat2 *s = ctx->seat;
+    const int attack = sap2_amount(ab->attack, ctx->level);
+    const int health = sap2_amount(ab->health, ctx->level);
+    const int count = sap2_amount(ab->count, ctx->level);
+
+    switch (ab->selector) {
+    case SAP2_SEL_SELF:
+        if (ab->effect == SAP2_EFF_GAIN_GOLD) {
+            s->gold = (int16_t)(s->gold + attack);
+        }
+        return;
+    case SAP2_SEL_TRIGGER_TARGET:
+        if (ctx->trigger_slot >= 0 && s->team[ctx->trigger_slot].species != SAP2_SPECIES_EMPTY) {
+            sap2_apply_buff(&s->team[ctx->trigger_slot], attack, health, ab->duration);
+        }
+        return;
+    case SAP2_SEL_RANDOM_FRIEND: {
+        int friends[SAP2_TEAM];
+        const int n = sap2_friends(s, ctx->self_slot, friends);
+        int picked[SAP2_TEAM];
+        const int k = sap2_pick_random(&s->rng, friends, n, count, picked);
+        for (int i = 0; i < k; i++) {
+            sap2_apply_buff(&s->team[picked[i]], attack, health, ab->duration);
+        }
+        return;
+    }
+    case SAP2_SEL_SHOP_PETS:
+        for (int i = 0; i < SAP2_MAX_SHOP_PETS; i++) {
+            if (s->shop_pets[i].species != SAP2_SPECIES_EMPTY) {
+                s->shop_pets[i].hp_bonus = (int8_t)(s->shop_pets[i].hp_bonus + health);
+            }
+        }
+        return;
+    case SAP2_SEL_SHOP_FOOD: {
+        /* Prepend `count` free copies; the rolled stock survives, pushed
+         * right. SAP2_FOOD_SLOTS is sized for the worst case, so nothing
+         * real can fall off the end. */
+        for (int f = SAP2_FOOD_SLOTS - 1; f >= count; f--) {
+            s->shop_food[f] = s->shop_food[f - count];
+        }
+        for (int f = 0; f < count; f++) {
+            s->shop_food[f].species = ab->param;
+            s->shop_food[f].frozen = 0;
+        }
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+/* Every pet on the team gets a chance at a trigger that is about someone
+ * else - the watcher pattern, which is how the shipped build's trigger bus
+ * works (TriggerMinions fans an event out over the board). */
+static inline void sap2_fire_watchers(SapSeat2 *s, int trigger, int trigger_slot) {
     for (int i = 0; i < SAP2_TEAM; i++) {
-        if (i == slot || s->team[i].species != SAP2_HORSE) {
+        if (i == trigger_slot || s->team[i].species == SAP2_SPECIES_EMPTY) {
             continue;
         }
-        int temp = (int)s->team[slot].temp_attack + (int)s->team[i].level;
-        if (temp > SAP2_MAX_STATS) {
-            temp = SAP2_MAX_STATS; /* the sum is clamped again on read */
-        }
-        s->team[slot].temp_attack = (int8_t)temp;
+        Sap2Ctx ctx = {s, i, trigger_slot, s->team[i].level};
+        sap2_fire(s->team[i].species, trigger, &ctx);
     }
+}
+
+/* A friend was summoned - fan the trigger out over the board.
+ *
+ * Horse is the only pet in this roster that listens, and its buff is the
+ * one temporary effect: measured from the shipped build via
+ * policy-clash-re-tools, Horse's effect carries Duration = Temp(1) while
+ * Ant, Otter, Beaver, Duck and Fish all carry Perm(0), and the deadline
+ * Temp(1) names is the START OF THE NEXT TURN, not the end of battle - a
+ * Horse plus a freshly bought Ant showed Ant 3/2 for all of turn 1,
+ * including that turn's battle, and 2/2 from turn 2 onwards. So it lands
+ * in temp_attack, where the battle still reads it (sap2_battle_load goes
+ * through sap2_pet_attack) and sap2_resolve_round's round advance - which
+ * runs after that battle - clears it. */
+static inline void sap2_fire_friend_summoned(SapSeat2 *s, int slot) {
+    sap2_fire_watchers(s, SAP2_TRIG_SUMMON, slot);
 }
 
 /* Stacking a copy onto a pet - the one implementation both the shop-stack
@@ -513,41 +700,25 @@ static inline void sap2_stack_onto(SapSeat2 *s, int target, const SapPet2 *incom
         a->perk = incoming->perk;
     }
 
-    /* Fish's level-up. Measured: exactly TWO random friends, and the amount
-     * is the level just reached minus one - a Fish hitting level 2 gave two
-     * friends +1/+1, hitting level 3 gave two friends +2/+2. Not level-many
-     * friends, and not +level/+level. Fires on either stack path. */
-    if (a->species == SAP2_FISH && a->level > prev_level && a->level >= 2) {
-        const int8_t amount = (int8_t)(a->level - 1);
-        int friends[SAP2_TEAM];
-        const int n = sap2_friends(s, target, friends);
-        int picked[SAP2_TEAM];
-        const int k = sap2_pick_random(&s->rng, friends, n, 2, picked);
-        for (int p = 0; p < k; p++) {
-            s->team[picked[p]].attack = (int8_t)(s->team[picked[p]].attack + amount);
-            s->team[picked[p]].health = (int8_t)(s->team[picked[p]].health + amount);
-            sap2_clamp_stats(&s->team[picked[p]]);
-        }
+    /* The level-up trigger, fired on the pet that just levelled. Measured:
+     * Fish gives exactly TWO random friends +(new level - 1), so a Fish
+     * hitting level 2 gave two friends +1/+1 and level 3 gave +2/+2 - not
+     * level-many friends, and not +level/+level. Fires on either stack
+     * path. */
+    if (a->level > prev_level && a->level >= 2) {
+        Sap2Ctx ctx = {s, target, target, a->level};
+        sap2_fire(a->species, SAP2_TRIG_LEVELUP, &ctx);
     }
 }
 
-/* A bought pet's own on-play ability. Split out of sap2_buy_pet because a
+/* A bought pet's own on-play trigger. Split out of sap2_buy_pet because a
  * stack fires it too, and at the level the pet has AFTER stacking:
  * measured via policy-clash-re-tools, stacking a second Otter onto a
  * level-1 Otter gave one friend +1 health, and the copy that took it to
  * level 2 gave two friends +1 health. */
 static inline void sap2_fire_on_play(SapSeat2 *s, int slot) {
-    if (s->team[slot].species != SAP2_OTTER) {
-        return;
-    }
-    int friends[SAP2_TEAM];
-    const int n = sap2_friends(s, slot, friends);
-    int picked[SAP2_TEAM];
-    const int k = sap2_pick_random(&s->rng, friends, n, s->team[slot].level, picked);
-    for (int i = 0; i < k; i++) {
-        s->team[picked[i]].health = (int8_t)(s->team[picked[i]].health + 1);
-        sap2_clamp_stats(&s->team[picked[i]]);
-    }
+    Sap2Ctx ctx = {s, slot, slot, s->team[slot].level};
+    sap2_fire(s->team[slot].species, SAP2_TRIG_PLAY, &ctx);
 }
 
 static inline int sap2_has_empty(const SapSeat2 *s) {
@@ -663,62 +834,28 @@ static inline void sap2_buy_pet(SapSeat2 *s, int shop_slot, int dest) {
 
 /* Sell value is the pet's LEVEL, 1/2/3 - measured from the shipped build
  * via policy-clash-re-tools, and independent of how big the pet's stats got.
- * Pig doubles what the sale paid, so it hands over another `level`. */
+ *
+ * Two triggers fire here, in the order the shipped build names them:
+ * BEFORE_SELL first (Pig, which doubles the sale by handing over another
+ * `level`), then SELL once the pet has left the board (Beaver's attack
+ * onto two friends, Duck's health onto the shop, Pigeon's free Bread
+ * Crumbs). The sold pet's own slot is already empty by then, which is why
+ * SAP2_SEL_RANDOM_FRIEND excluding `self_slot` still reads correctly.
+ *
+ * Pigeon's crumbs come in UNFROZEN. A reading that said otherwise on a
+ * turn>=2 board was an artifact of the oracle, not the game: the flag keys
+ * off BoardModel.TurnOver, and the harness's faked Ready->PreBuild handoff
+ * left TurnOver set. With it cleared the crumbs are unfrozen at every turn
+ * and tier. A crumb the player freezes by hand behaves like any other
+ * frozen item. */
 static inline void sap2_sell(SapSeat2 *s, int slot) {
-    SapPet2 sold = s->team[slot];
+    const SapPet2 sold = s->team[slot];
+    Sap2Ctx ctx = {s, slot, slot, sold.level};
+
+    sap2_fire(sold.species, SAP2_TRIG_BEFORE_SELL, &ctx);
     s->gold = (int16_t)(s->gold + sold.level);
     s->team[slot].species = SAP2_SPECIES_EMPTY;
-
-    switch (sold.species) {
-    case SAP2_BEAVER: {
-        int friends[SAP2_TEAM];
-        const int n = sap2_friends(s, slot, friends);
-        int picked[SAP2_TEAM];
-        const int k = sap2_pick_random(&s->rng, friends, n, 2, picked);
-        for (int i = 0; i < k; i++) {
-            s->team[picked[i]].attack = (int8_t)(s->team[picked[i]].attack + sold.level);
-            sap2_clamp_stats(&s->team[picked[i]]);
-        }
-        break;
-    }
-    case SAP2_DUCK:
-        for (int i = 0; i < SAP2_MAX_SHOP_PETS; i++) {
-            if (s->shop_pets[i].species != SAP2_SPECIES_EMPTY) {
-                s->shop_pets[i].hp_bonus = (int8_t)(s->shop_pets[i].hp_bonus + sold.level);
-            }
-        }
-        break;
-    case SAP2_PIG:
-        s->gold = (int16_t)(s->gold + sold.level);
-        break;
-    case SAP2_PIGEON: {
-        /* Measured from the shipped build via policy-clash-re-tools: the sell
-         * stocks `level` Bread Crumbs at price 0, PREPENDS them - the food
-         * that was already rolled survives, pushed right. An L2 Pigeon sold
-         * into a turn-1 shop turns [Apple] into [Crumbs, Crumbs, Apple], and
-         * five level-1 Pigeons sold in one phase leave seven items, all of
-         * them buyable. SAP2_FOOD_SLOTS is sized for the worst case, so the
-         * prepend below can never push a real item off the end.
-         *
-         * The crumbs come in UNFROZEN. A reading that said otherwise on a
-         * turn>=2 board was an artifact of the oracle, not the game: the
-         * flag keys off BoardModel.TurnOver, and the harness's faked
-         * Ready->PreBuild handoff left TurnOver set. With it cleared the
-         * crumbs are unfrozen at every turn and tier. A crumb the player
-         * freezes by hand behaves like any other frozen item. */
-        const int n = sold.level;
-        for (int f = SAP2_FOOD_SLOTS - 1; f >= n; f--) {
-            s->shop_food[f] = s->shop_food[f - n];
-        }
-        for (int f = 0; f < n; f++) {
-            s->shop_food[f].species = SAP2_BREAD_CRUMBS;
-            s->shop_food[f].frozen = 0;
-        }
-        break;
-    }
-    default:
-        break;
-    }
+    sap2_fire(sold.species, SAP2_TRIG_SELL, &ctx);
 }
 
 /* A team-to-team merge: drag one of your pets onto another of the same
