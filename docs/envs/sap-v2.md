@@ -415,18 +415,47 @@ and 159 actions since, so treat it as a loose upper bound.
    `BeforeAttack`/`AfterAttack` (Boar, Elephant already tier 3 — Boar is
    the tier-6 case) and `Fly`'s bounded-trigger-count ability.
 
-Each phase: port abilities from `data/turtle_pack/pets.json`, extend the
-trigger taxonomy only as far as that tier's roster actually needs (same
-rule `sap-v1` followed — it implemented only `FAINT`/`SELL`/`BUY`/
-`LEVELUP`/`FRIEND_SUMMONED`/`START_OF_BATTLE`, the subset Tier 1 uses, not
-the full taxonomy speculatively), write tests before calling it done, and
-benchmark. No tier's implementation blocks reporting the previous one as
-finished.
+Each phase: generate the tier's rows from `sap/spec.py`'s dump of the
+shipped build's own ability templates (not from a wiki or a scrape),
+extend the trigger/selector/effect taxonomy only as far as that tier's
+roster actually needs, drive each new ability in both engines with
+`policy-clash-re-tools`' `sap/ability_check.py`, and re-run the battle and
+shop differential suites before calling it done. No tier's implementation
+blocks reporting the previous one as finished.
+
+## Abilities are data, not code
+
+The shipped build does not write an ability as code either: each one is an
+`Ability` object carrying a Trigger, an Aim (target selector) and a list of
+AbilityPairs (condition + effect), looked up per level through
+`AbilityUtility.GetTemplate`. `sap2.h` mirrors that shape - a
+`Sap2Ability` table row per species (`SAP2_ABILITY`) and per perk
+(`SAP2_PERK_ABILITY`), read by two interpreters:
+
+- `sap2_fire` / `sap2_fire_watchers` resolve a row against a `SapSeat2` -
+  the shop phase's fixed slots and holes.
+- `sap2_battle_fire` / `sap2_battle_resolve_faint` / `sap2_battle_start`
+  resolve the same row against a `SapBattle2` - a packed line that mutates
+  as bodies leave.
+
+The two containers are genuinely different, so selectors and effects are
+implemented twice; the data describing each ability lives in one place.
+All ten Tier-1 pets plus the Honey perk are rows. `sap/spec.py --inventory`
+says what the rest of Pack1 needs on top: 17 trigger families, 18 effect
+kinds, 9 target selectors, and no conditions at all.
+
+Two families exist in the enum with no Tier-1 listener and therefore no
+firing point yet: `SAP2_TRIG_HURT`, `SAP2_TRIG_ATTACK` and
+`SAP2_TRIG_KILL`. Their *order* relative to the exchange and to each other
+is not measurable on this roster - nothing listens - so the hooks are
+deliberately absent rather than guessed. Tier 2's Peacock (`Hurt`) is the
+first pet that can measure them.
 
 ## See also
 
 - [colin-cannell/SAP_Clone](https://github.com/colin-cannell/SAP_Clone) — the
   companion project this env was designed alongside: `SAP_clone.md` §2
-  (turn structure) and the now-resolved multi-round-meta open question,
-  and `data/turtle_pack/pets.json` — the full 61-pet, 17-food dataset
-  every later tier phase in the appendix above ports from.
+  (turn structure) and the now-resolved multi-round-meta open question.
+  Its `data/turtle_pack/pets.json` is a community scrape; later tiers port
+  from `policy-clash-re-tools`' `sap/spec.py` instead, which reads the
+  shipped build's own templates (60 pets, 18 foods, 186 templates).

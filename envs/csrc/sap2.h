@@ -452,6 +452,7 @@ static inline void sap2_clamp_stats(SapPet2 *p) {
  * anything >= 0 is a flat amount. */
 #define SAP2_BY_LEVEL (-1)
 #define SAP2_BY_LEVEL_LESS1 (-2)
+#define SAP2_MAX_ABILITIES 2 /* Whale and Cow carry two; nothing here does yet */
 
 enum {
     SAP2_TRIG_NONE = 0,
@@ -459,16 +460,24 @@ enum {
     SAP2_TRIG_SELL,          /* this pet was sold */
     SAP2_TRIG_BEFORE_SELL,   /* ditto, but before the gold is paid out */
     SAP2_TRIG_LEVELUP,       /* this pet's level just went up */
-    SAP2_TRIG_SUMMON         /* a FRIEND was summoned - fires on the watcher */
+    SAP2_TRIG_SUMMON,        /* a FRIEND was summoned - fires on the watcher */
+    SAP2_TRIG_START_BATTLE,  /* queued once, before the first exchange */
+    SAP2_TRIG_BEFORE_DEATH,  /* fainting, body still on the board */
+    SAP2_TRIG_DEATH,         /* fainted, body gone - a summon takes the slot */
+    SAP2_TRIG_HURT,          /* took damage and lived */
+    SAP2_TRIG_ATTACK,        /* this pet attacked */
+    SAP2_TRIG_KILL           /* this pet's attack fainted its target */
 };
 
 enum {
     SAP2_SEL_NONE = 0,
     SAP2_SEL_SELF,
     SAP2_SEL_RANDOM_FRIEND,  /* uniform over living friends, excluding self */
+    SAP2_SEL_RANDOM_ENEMY,   /* battle only */
     SAP2_SEL_TRIGGER_TARGET, /* the pet the trigger was about (Horse) */
     SAP2_SEL_SHOP_PETS,      /* every occupied shop pet slot */
-    SAP2_SEL_SHOP_FOOD       /* the food shop, as a list to prepend to */
+    SAP2_SEL_SHOP_FOOD,      /* the food shop, as a list to prepend to */
+    SAP2_SEL_SUMMON_SLOT     /* the position the fainting body just left */
 };
 
 enum {
@@ -476,7 +485,9 @@ enum {
     SAP2_EFF_BUFF,           /* attack/health onto the target, perm or temp */
     SAP2_EFF_BUFF_SHOP,      /* health onto shop pets, carried by the buy */
     SAP2_EFF_GAIN_GOLD,
-    SAP2_EFF_ADD_SHOP_SPELL  /* prepend `count` copies of `param`, free */
+    SAP2_EFF_ADD_SHOP_SPELL, /* prepend `count` copies of `param`, free */
+    SAP2_EFF_DAMAGE,
+    SAP2_EFF_SUMMON
 };
 
 enum { SAP2_DUR_PERM = 0, SAP2_DUR_TEMP = 1 };
@@ -485,38 +496,47 @@ typedef struct {
     uint8_t trigger;
     uint8_t selector;
     uint8_t effect;
-    int8_t count;   /* how many targets */
+    int8_t count;   /* how many targets, or the summon's level */
     int8_t attack;  /* amount, or SAP2_BY_LEVEL* */
     int8_t health;
     uint8_t param;  /* species / food id, effect-dependent */
     uint8_t duration;
 } Sap2Ability;
 
-/* One row per species. Battle-phase abilities (Ant, Cricket, Mosquito, and
- * the Honey perk) still live in the battle section: the battle runs on a
- * throwaway SapBattle2 copy rather than on SapSeat2, so they need the same
- * treatment applied to that container - the next slice of this port. */
-static const Sap2Ability SAP2_ABILITY[SAP2_NUM_ALL_SPECIES] = {
-    /* EMPTY   */ {0},
-    /* ANT     */ {0}, /* battle: faint */
-    /* BEAVER  */ {SAP2_TRIG_SELL, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
-                   2, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_PERM},
-    /* CRICKET */ {0}, /* battle: faint */
-    /* DUCK    */ {SAP2_TRIG_SELL, SAP2_SEL_SHOP_PETS, SAP2_EFF_BUFF_SHOP,
-                   0, 0, SAP2_BY_LEVEL, 0, SAP2_DUR_PERM},
-    /* FISH    */ {SAP2_TRIG_LEVELUP, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
-                   2, SAP2_BY_LEVEL_LESS1, SAP2_BY_LEVEL_LESS1, 0, SAP2_DUR_PERM},
-    /* HORSE   */ {SAP2_TRIG_SUMMON, SAP2_SEL_TRIGGER_TARGET, SAP2_EFF_BUFF,
-                   1, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_TEMP},
-    /* MOSQUITO*/ {0}, /* battle: start of battle */
-    /* OTTER   */ {SAP2_TRIG_PLAY, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
-                   SAP2_BY_LEVEL, 0, 1, 0, SAP2_DUR_PERM},
-    /* PIG     */ {SAP2_TRIG_BEFORE_SELL, SAP2_SEL_SELF, SAP2_EFF_GAIN_GOLD,
-                   1, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_PERM},
-    /* PIGEON  */ {SAP2_TRIG_SELL, SAP2_SEL_SHOP_FOOD, SAP2_EFF_ADD_SHOP_SPELL,
-                   SAP2_BY_LEVEL, 0, 0, SAP2_BREAD_CRUMBS, SAP2_DUR_PERM},
-    /* C.TOKEN */ {0},
-    /* BEE     */ {0}
+static const Sap2Ability SAP2_ABILITY[SAP2_NUM_ALL_SPECIES][SAP2_MAX_ABILITIES] = {
+    /* EMPTY   */ {{0}, {0}},
+    /* ANT     */ {{SAP2_TRIG_BEFORE_DEATH, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
+                    1, SAP2_BY_LEVEL, SAP2_BY_LEVEL, 0, SAP2_DUR_PERM}, {0}},
+    /* BEAVER  */ {{SAP2_TRIG_SELL, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
+                    2, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_PERM}, {0}},
+    /* CRICKET */ {{SAP2_TRIG_DEATH, SAP2_SEL_SUMMON_SLOT, SAP2_EFF_SUMMON,
+                    SAP2_BY_LEVEL, SAP2_BY_LEVEL, SAP2_BY_LEVEL, SAP2_CRICKET_TOKEN,
+                    SAP2_DUR_PERM}, {0}},
+    /* DUCK    */ {{SAP2_TRIG_SELL, SAP2_SEL_SHOP_PETS, SAP2_EFF_BUFF_SHOP,
+                    0, 0, SAP2_BY_LEVEL, 0, SAP2_DUR_PERM}, {0}},
+    /* FISH    */ {{SAP2_TRIG_LEVELUP, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
+                    2, SAP2_BY_LEVEL_LESS1, SAP2_BY_LEVEL_LESS1, 0, SAP2_DUR_PERM}, {0}},
+    /* HORSE   */ {{SAP2_TRIG_SUMMON, SAP2_SEL_TRIGGER_TARGET, SAP2_EFF_BUFF,
+                    1, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_TEMP}, {0}},
+    /* MOSQUITO*/ {{SAP2_TRIG_START_BATTLE, SAP2_SEL_RANDOM_ENEMY, SAP2_EFF_DAMAGE,
+                    SAP2_BY_LEVEL, 1, 0, 0, SAP2_DUR_PERM}, {0}},
+    /* OTTER   */ {{SAP2_TRIG_PLAY, SAP2_SEL_RANDOM_FRIEND, SAP2_EFF_BUFF,
+                    SAP2_BY_LEVEL, 0, 1, 0, SAP2_DUR_PERM}, {0}},
+    /* PIG     */ {{SAP2_TRIG_BEFORE_SELL, SAP2_SEL_SELF, SAP2_EFF_GAIN_GOLD,
+                    1, SAP2_BY_LEVEL, 0, 0, SAP2_DUR_PERM}, {0}},
+    /* PIGEON  */ {{SAP2_TRIG_SELL, SAP2_SEL_SHOP_FOOD, SAP2_EFF_ADD_SHOP_SPELL,
+                    SAP2_BY_LEVEL, 0, 0, SAP2_BREAD_CRUMBS, SAP2_DUR_PERM}, {0}},
+    /* C.TOKEN */ {{0}, {0}},
+    /* BEE     */ {{0}, {0}}
+};
+
+/* Perks carry abilities too, on the pet rather than the species. Honey is
+ * the only one this roster produces; Meat Bone (Tier 2) and Melon (Tier 3)
+ * hook in here, and Melon is also the first perk with a durability. */
+static const Sap2Ability SAP2_PERK_ABILITY[SAP2_NUM_PERKS] = {
+    /* NONE  */ {0},
+    /* HONEY */ {SAP2_TRIG_DEATH, SAP2_SEL_SUMMON_SLOT, SAP2_EFF_SUMMON,
+                 1, 1, 1, SAP2_BEE, SAP2_DUR_PERM}
 };
 
 /* Resolves an amount against the firing pet's level. */
@@ -557,12 +577,13 @@ static inline void sap2_apply_buff(SapPet2 *p, int attack, int health, int durat
     sap2_clamp_stats(p);
 }
 
-/* Fires `species`'s ability if it listens for `trigger`. Shop phase only -
- * see the table's comment. */
+/* Fires `species`'s abilities that listen for `trigger`, against a seat.
+ * The battle-phase half of the same table is sap2_battle_fire. */
 static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
-    const Sap2Ability *ab = &SAP2_ABILITY[species];
+    for (int slot = 0; slot < SAP2_MAX_ABILITIES; slot++) {
+    const Sap2Ability *ab = &SAP2_ABILITY[species][slot];
     if (ab->trigger != trigger || ab->effect == SAP2_EFF_NONE) {
-        return;
+        continue;
     }
     SapSeat2 *s = ctx->seat;
     const int attack = sap2_amount(ab->attack, ctx->level);
@@ -574,12 +595,12 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
         if (ab->effect == SAP2_EFF_GAIN_GOLD) {
             s->gold = (int16_t)(s->gold + attack);
         }
-        return;
+        break;
     case SAP2_SEL_TRIGGER_TARGET:
         if (ctx->trigger_slot >= 0 && s->team[ctx->trigger_slot].species != SAP2_SPECIES_EMPTY) {
             sap2_apply_buff(&s->team[ctx->trigger_slot], attack, health, ab->duration);
         }
-        return;
+        break;
     case SAP2_SEL_RANDOM_FRIEND: {
         int friends[SAP2_TEAM];
         const int n = sap2_friends(s, ctx->self_slot, friends);
@@ -588,7 +609,7 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
         for (int i = 0; i < k; i++) {
             sap2_apply_buff(&s->team[picked[i]], attack, health, ab->duration);
         }
-        return;
+        break;
     }
     case SAP2_SEL_SHOP_PETS:
         for (int i = 0; i < SAP2_MAX_SHOP_PETS; i++) {
@@ -596,7 +617,7 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
                 s->shop_pets[i].hp_bonus = (int8_t)(s->shop_pets[i].hp_bonus + health);
             }
         }
-        return;
+        break;
     case SAP2_SEL_SHOP_FOOD: {
         /* Prepend `count` free copies; the rolled stock survives, pushed
          * right. SAP2_FOOD_SLOTS is sized for the worst case, so nothing
@@ -608,10 +629,11 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
             s->shop_food[f].species = ab->param;
             s->shop_food[f].frozen = 0;
         }
-        return;
+        break;
     }
     default:
-        return;
+        break;
+    }
     }
 }
 
@@ -1091,70 +1113,190 @@ static inline void sap2_battle_insert_front(SapBattle2 *b, int side, uint8_t spe
     }
 }
 
+/* -------------------------------------------------------------------- */
+/* Abilities in battle
+ *
+ * Same table as the shop phase, resolved against SapBattle2 instead of
+ * SapSeat2. The two containers are genuinely different - a battle line is
+ * packed and mutates as bodies leave, a seat has fixed slots and holes -
+ * so the selectors and effects are implemented twice while the DATA
+ * describing each ability stays in one place.
+ *
+ * The faint sequence is BEFORE_DEATH, then the body leaves, then DEATH:
+ * Ant's buff lands while it is still on the board (so it cannot pick
+ * itself), and Cricket's token and the Honey Bee take the vacated front
+ * position. That ordering is what the shipped build's
+ * BeforeDeath/DeathEarly/Death events do, and it is what 200 boards of
+ * exact surviving line-ups verified. */
+typedef struct {
+    SapBattle2 *b;
+    uint64_t *rng;
+    int side;   /* the firing pet's side */
+    int idx;    /* its position, or -1 if its body has already left */
+    int level;
+    uint8_t perk;
+} Sap2BattleCtx;
+
+static inline void sap2_battle_clamp(SapBattle2 *b, int side, int i) {
+    if (b->attack[side][i] > SAP2_MAX_STATS) {
+        b->attack[side][i] = SAP2_MAX_STATS;
+    }
+    if (b->attack[side][i] < 0) {
+        b->attack[side][i] = 0;
+    }
+    if (b->health[side][i] > SAP2_MAX_STATS) {
+        b->health[side][i] = SAP2_MAX_STATS;
+    }
+}
+
+/* Damage to one battle pet. Returns 1 if it fainted, so the caller can
+ * resolve the faint in the order the phase requires. */
+static inline int sap2_battle_hurt(SapBattle2 *b, int side, int i, int amount) {
+    b->health[side][i] = (int8_t)(b->health[side][i] - amount);
+    return b->health[side][i] <= 0;
+}
+
+static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
+                                     Sap2BattleCtx *ctx);
+
+/* A pet's body leaves the line. BEFORE_DEATH has already fired; DEATH
+ * fires once the slot is gone, because a summon takes its place. */
 static inline void sap2_battle_resolve_faint(SapBattle2 *b, uint64_t *rng, int side, int idx) {
     const uint8_t species = b->species[side][idx];
-    const uint8_t level = b->level[side][idx];
     const uint8_t perk = b->perk[side][idx];
+    Sap2BattleCtx ctx = {b, rng, side, idx, b->level[side][idx], perk};
 
-    if (species == SAP2_ANT) {
-        int friends[SAP2_TEAM];
-        int n = 0;
-        for (int i = 0; i < b->count[side]; i++) {
-            if (i != idx) {
-                friends[n++] = i;
-            }
-        }
-        int picked[SAP2_TEAM];
-        const int k = sap2_pick_random(rng, friends, n, 1, picked);
-        for (int p = 0; p < k; p++) {
-            const int t = picked[p];
-            b->attack[side][t] = (int8_t)(b->attack[side][t] + level);
-            b->health[side][t] = (int8_t)(b->health[side][t] + level);
-            if (b->attack[side][t] > SAP2_MAX_STATS) {
-                b->attack[side][t] = SAP2_MAX_STATS;
-            }
-            if (b->health[side][t] > SAP2_MAX_STATS) {
-                b->health[side][t] = SAP2_MAX_STATS;
-            }
-        }
-    } else if (species == SAP2_CRICKET) {
-        sap2_battle_remove(b, side, idx);
-        sap2_battle_insert_front(b, side, SAP2_CRICKET_TOKEN, level, level, level);
-        return;
-    }
-
-    if (perk == SAP2_PERK_HONEY) {
-        sap2_battle_remove(b, side, idx);
-        sap2_battle_insert_front(b, side, SAP2_BEE, 1, 1, 1);
-        return;
-    }
-
+    sap2_battle_fire(species, perk, SAP2_TRIG_BEFORE_DEATH, &ctx);
     sap2_battle_remove(b, side, idx);
+    ctx.idx = -1;
+    sap2_battle_fire(species, perk, SAP2_TRIG_DEATH, &ctx);
+}
+
+static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
+                                     Sap2BattleCtx *ctx) {
+    SapBattle2 *b = ctx->b;
+    const int side = ctx->side;
+    const int enemy = side ^ 1;
+
+    for (int slot = 0; slot < SAP2_MAX_ABILITIES; slot++) {
+        const Sap2Ability *ab = &SAP2_ABILITY[species][slot];
+        if (ab->trigger != trigger || ab->effect == SAP2_EFF_NONE) {
+            continue;
+        }
+        const int attack = sap2_amount(ab->attack, ctx->level);
+        const int health = sap2_amount(ab->health, ctx->level);
+        const int count = sap2_amount(ab->count, ctx->level);
+
+        switch (ab->selector) {
+        case SAP2_SEL_RANDOM_FRIEND: {
+            int friends[SAP2_TEAM];
+            int n = 0;
+            for (int i = 0; i < b->count[side]; i++) {
+                if (i != ctx->idx) {
+                    friends[n++] = i;
+                }
+            }
+            int picked[SAP2_TEAM];
+            const int k = sap2_pick_random(ctx->rng, friends, n, count, picked);
+            for (int p = 0; p < k; p++) {
+                const int t = picked[p];
+                b->attack[side][t] = (int8_t)(b->attack[side][t] + attack);
+                b->health[side][t] = (int8_t)(b->health[side][t] + health);
+                sap2_battle_clamp(b, side, t);
+            }
+            break;
+        }
+        case SAP2_SEL_RANDOM_ENEMY: {
+            /* Damage picks its targets from the enemies standing when the
+             * ability resolves, hits the highest index first so removals
+             * do not shift the rest, and resolves every faint afterwards. */
+            if (b->count[enemy] == 0) {
+                break;
+            }
+            const int n_hits = count < b->count[enemy] ? count : b->count[enemy];
+            int candidates[SAP2_TEAM];
+            for (int i = 0; i < b->count[enemy]; i++) {
+                candidates[i] = i;
+            }
+            int picked[SAP2_TEAM];
+            const int k = sap2_pick_random(ctx->rng, candidates, b->count[enemy], n_hits, picked);
+            for (int a = 0; a < k; a++) {
+                for (int c = a + 1; c < k; c++) {
+                    if (picked[c] > picked[a]) {
+                        const int tmp = picked[a];
+                        picked[a] = picked[c];
+                        picked[c] = tmp;
+                    }
+                }
+            }
+            int fainted[SAP2_TEAM];
+            int fc = 0;
+            for (int p = 0; p < k; p++) {
+                if (sap2_battle_hurt(b, enemy, picked[p], attack)) {
+                    fainted[fc++] = picked[p];
+                }
+            }
+            for (int i = 0; i < fc; i++) {
+                sap2_battle_resolve_faint(b, ctx->rng, enemy, fainted[i]);
+            }
+            break;
+        }
+        case SAP2_SEL_SUMMON_SLOT:
+            /* The summon takes the vacated position at the front of the
+             * line. `param` names the species; its stats scale with the
+             * summoner's level unless the row gives flat ones. */
+            sap2_battle_insert_front(b, side, ab->param, (int8_t)attack, (int8_t)health,
+                                     (uint8_t)(ab->count == SAP2_BY_LEVEL ? ctx->level : 1));
+            break;
+        default:
+            break;
+        }
+    }
+
+    /* Perk abilities ride on the pet, not the species - Honey's Bee. */
+    if (perk != SAP2_PERK_NONE) {
+        const Sap2Ability *pa = &SAP2_PERK_ABILITY[perk];
+        if (pa->trigger == trigger && pa->effect == SAP2_EFF_SUMMON) {
+            sap2_battle_insert_front(b, side, pa->param, pa->attack, pa->health, 1);
+        }
+    }
 }
 
 /* Start-of-battle abilities are QUEUED, then resolved.
  *
- * Verified against the shipped build (policy-clash-re-tools): a Mosquito that is
- * killed by another Mosquito's start-of-battle damage still deals its own
- * damage. Mosquito 5/1 vs Mosquito 1/1 is a draw in the real game for every
- * seed - the 5-attack one fires first and kills the 1/1, and the dead 1/1's
- * queued shot still lands and kills it back. So the trigger list is taken
- * once, up front, in attack order (ties broken at random, both engines'
- * documented order), and every entry fires even if its owner is already
- * gone by the time its turn comes. */
+ * Verified against the shipped build (policy-clash-re-tools): a Mosquito
+ * that is killed by another Mosquito's start-of-battle damage still deals
+ * its own damage. Mosquito 5/1 vs Mosquito 1/1 is a draw for every seed -
+ * the 5-attack one fires first and kills the 1/1, and the dead 1/1's
+ * queued shot still lands and kills it back. So the list is taken once, up
+ * front, in attack order with ties broken at random, and every entry fires
+ * even if its owner is already gone when its turn comes.
+ *
+ * The queue holds what an entry needs in order to fire without its body:
+ * side, level, species and perk. WHICH species listen is the table's
+ * business, not this function's. */
 static inline void sap2_battle_start(SapBattle2 *b, uint64_t *rng) {
-    /* Queue: one entry per Mosquito on the board when the battle starts. */
     int q_side[2 * SAP2_TEAM];
     int q_level[2 * SAP2_TEAM];
+    uint8_t q_species[2 * SAP2_TEAM];
+    uint8_t q_perk[2 * SAP2_TEAM];
     int8_t q_atk[2 * SAP2_TEAM];
     int qn = 0;
     for (int side = 0; side < 2; side++) {
         for (int i = 0; i < b->count[side]; i++) {
-            if (b->species[side][i] != SAP2_MOSQUITO) {
+            int listens = 0;
+            for (int slot = 0; slot < SAP2_MAX_ABILITIES; slot++) {
+                if (SAP2_ABILITY[b->species[side][i]][slot].trigger == SAP2_TRIG_START_BATTLE) {
+                    listens = 1;
+                }
+            }
+            if (!listens) {
                 continue;
             }
             q_side[qn] = side;
             q_level[qn] = b->level[side][i];
+            q_species[qn] = b->species[side][i];
+            q_perk[qn] = b->perk[side][i];
             q_atk[qn] = b->attack[side][i];
             qn++;
         }
@@ -1181,86 +1323,28 @@ static inline void sap2_battle_start(SapBattle2 *b, uint64_t *rng) {
         }
         if (pick != i) {
             const int ts = q_side[i], tl = q_level[i];
+            const uint8_t tsp = q_species[i], tpk = q_perk[i];
             const int8_t ta = q_atk[i];
             q_side[i] = q_side[pick];
             q_level[i] = q_level[pick];
+            q_species[i] = q_species[pick];
+            q_perk[i] = q_perk[pick];
             q_atk[i] = q_atk[pick];
             q_side[pick] = ts;
             q_level[pick] = tl;
+            q_species[pick] = tsp;
+            q_perk[pick] = tpk;
             q_atk[pick] = ta;
         }
     }
 
     for (int t = 0; t < qn; t++) {
-        const int enemy = q_side[t] ^ 1;
-        if (b->count[enemy] == 0) {
-            continue;
-        }
-        const int n_hits = q_level[t] < b->count[enemy] ? q_level[t] : b->count[enemy];
-        int candidates[SAP2_TEAM];
-        for (int i = 0; i < b->count[enemy]; i++) {
-            candidates[i] = i;
-        }
-        int picked[SAP2_TEAM];
-        const int k = sap2_pick_random(rng, candidates, b->count[enemy], n_hits, picked);
-        /* Highest index first, so removals below don't shift the rest. */
-        for (int a = 0; a < k; a++) {
-            for (int c = a + 1; c < k; c++) {
-                if (picked[c] > picked[a]) {
-                    const int tmp = picked[a];
-                    picked[a] = picked[c];
-                    picked[c] = tmp;
-                }
-            }
-        }
-
-        uint8_t f_species[SAP2_TEAM];
-        uint8_t f_level[SAP2_TEAM];
-        uint8_t f_perk[SAP2_TEAM];
-        int f_idx[SAP2_TEAM];
-        int fc = 0;
-        for (int p = 0; p < k; p++) {
-            const int target = picked[p];
-            b->health[enemy][target] = (int8_t)(b->health[enemy][target] - 1);
-            if (b->health[enemy][target] <= 0) {
-                f_idx[fc] = target;
-                f_species[fc] = b->species[enemy][target];
-                f_level[fc] = b->level[enemy][target];
-                f_perk[fc] = b->perk[enemy][target];
-                fc++;
-            }
-        }
-        for (int i = 0; i < fc; i++) {
-            sap2_battle_remove(b, enemy, f_idx[i]);
-        }
-        for (int i = 0; i < fc; i++) {
-            if (f_species[i] == SAP2_ANT) {
-                int friends[SAP2_TEAM];
-                for (int q = 0; q < b->count[enemy]; q++) {
-                    friends[q] = q;
-                }
-                int picked2[SAP2_TEAM];
-                const int k2 = sap2_pick_random(rng, friends, b->count[enemy], 1, picked2);
-                for (int pp = 0; pp < k2; pp++) {
-                    const int t2 = picked2[pp];
-                    b->attack[enemy][t2] = (int8_t)(b->attack[enemy][t2] + f_level[i]);
-                    b->health[enemy][t2] = (int8_t)(b->health[enemy][t2] + f_level[i]);
-                    if (b->attack[enemy][t2] > SAP2_MAX_STATS) {
-                        b->attack[enemy][t2] = SAP2_MAX_STATS;
-                    }
-                    if (b->health[enemy][t2] > SAP2_MAX_STATS) {
-                        b->health[enemy][t2] = SAP2_MAX_STATS;
-                    }
-                }
-            } else if (f_species[i] == SAP2_CRICKET) {
-                sap2_battle_insert_front(b, enemy, SAP2_CRICKET_TOKEN, (int8_t)f_level[i],
-                                          (int8_t)f_level[i], f_level[i]);
-                continue;
-            }
-            if (f_perk[i] == SAP2_PERK_HONEY) {
-                sap2_battle_insert_front(b, enemy, SAP2_BEE, 1, 1, 1);
-            }
-        }
+        /* idx -1: the owner may already be gone, and no start-of-battle
+         * ability in this roster targets its own body. The perk is passed
+         * as NONE because a perk ability firing here would belong to the
+         * queue entry, not to this trigger. */
+        Sap2BattleCtx ctx = {b, rng, q_side[t], -1, q_level[t], q_perk[t]};
+        sap2_battle_fire(q_species[t], SAP2_PERK_NONE, SAP2_TRIG_START_BATTLE, &ctx);
     }
 }
 
