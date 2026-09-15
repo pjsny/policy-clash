@@ -185,14 +185,20 @@ static inline uint8_t sap2_level_for_exp(uint8_t exp) {
  * that gives 3/1 for turns 1-4, 4/2 for turns 5-8 and 5/2 from turn 9
  * on, which is exactly what the oracle reports.
  *
- * SAP2_ROSTER_TIER caps which species may actually roll, independently
- * of the shop's own tier: the roster here is Tier 1 plus Tier 2's rules,
- * and Tier 2 cannot be offered until Spider's summon has a Tier 3 to
- * draw from. See docs/envs/sap-v2.md's appendix. */
+ * SAP2_ROSTER_TIER caps which species may actually roll, independently of
+ * the shop's own tier - it is how far the implemented roster reaches.
+ *
+ * It is 2, with one known hole behind it: Spider's faint summons a random
+ * TIER 3 pet, and that roster does not exist here yet, so a Spider that
+ * faints in battle summons nothing. Holding the whole tier back instead
+ * would be worse, not better: capped at 1, EVERY turn-3-and-later shop is
+ * wrong by construction - the real game draws from 20 species and this
+ * would draw from 10 - whereas at 2 the only divergence is one species'
+ * faint effect. Tier 3 closes it. */
 static const int SAP2_TIER_ON_TURN[] = {3, 5, 7, 9, 11};
 static const int SAP2_PET_CAPACITY_ON_TIER[] = {3, 5};
 static const int SAP2_FOOD_CAPACITY_ON_TIER[] = {3};
-#define SAP2_ROSTER_TIER 1
+#define SAP2_ROSTER_TIER 2
 
 static inline int sap2_tier_for_turn(int turn) {
     int tier = 1;

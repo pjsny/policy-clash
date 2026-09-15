@@ -220,6 +220,7 @@ PyMODINIT_FUNC PyInit__sap2(void) {
         PyModule_AddIntConstant(module, "MAX_TICKS", SAP2_MAX_TICKS) < 0 ||
         PyModule_AddIntConstant(module, "TEAM_SLOTS", SAP2_TEAM) < 0 ||
         PyModule_AddIntConstant(module, "MAX_SHOP_PETS", SAP2_MAX_SHOP_PETS) < 0 ||
+        PyModule_AddIntConstant(module, "ROSTER_TIER", SAP2_ROSTER_TIER) < 0 ||
         PyModule_AddIntConstant(module, "MAX_SHOP_FOOD", SAP2_MAX_SHOP_FOOD) < 0 ||
         PyModule_AddIntConstant(module, "FOOD_SLOTS", SAP2_FOOD_SLOTS) < 0 ||
         /* Slot widths and action bases, so that layout-aware consumers

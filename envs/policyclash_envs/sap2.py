@@ -31,6 +31,7 @@ NUM_ACTIONS = _sap2.NUM_ACTIONS
 MAX_TICKS = _sap2.MAX_TICKS
 TEAM_SLOTS = _sap2.TEAM_SLOTS
 MAX_SHOP_PETS = _sap2.MAX_SHOP_PETS
+ROSTER_TIER = _sap2.ROSTER_TIER  # how far the implemented roster reaches
 MAX_SHOP_FOOD = _sap2.MAX_SHOP_FOOD  # the largest food shop a ROLL fills
 FOOD_SLOTS = _sap2.FOOD_SLOTS  # array width: Pigeon prepends up to 3 free crumbs
 MAX_LEVEL = _sap2.MAX_LEVEL
