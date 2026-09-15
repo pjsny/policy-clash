@@ -861,6 +861,10 @@ static inline int sap2_condition_holds(const Sap2Ability *ab, const Sap2Ctx *ctx
     }
 }
 
+static inline void sap2_seat_damage(SapSeat2 *s, const int *slots, int n, int amount);
+static inline void sap2_seat_faint(SapSeat2 *s, int slot);
+static inline void sap2_fire_watchers(SapSeat2 *s, int trigger, int trigger_slot);
+
 /* Fires `species`'s abilities that listen for `trigger`, against a seat.
  * The battle-phase half of the same table is sap2_battle_fire. */
 static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
@@ -943,9 +947,126 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
             }
             break;
         }
+        case SAP2_SEL_ALL_MINIONS: {
+            /* Hedgehog, reachable in the build phase through a Pill.
+             * Measured (sap/order_probe.py, a real board driven through
+             * the resolver's own PlaySpell): it damages every other pet on
+             * the TEAM, never the shop, never itself, and never a pet
+             * already mid-faint. There is no opponent board in a build
+             * phase, so "both sides" is just this team here. */
+            int targets[SAP2_TEAM];
+            int n = 0;
+            for (int i = 0; i < SAP2_TEAM; i++) {
+                if (i != ctx->self_slot && s->team[i].species != SAP2_SPECIES_EMPTY) {
+                    targets[n++] = i;
+                }
+            }
+            sap2_seat_damage(s, targets, n, attack);
+            break;
+        }
+        case SAP2_SEL_SUMMON_SLOT: {
+            /* A faint in the build phase summons into the slot the body
+             * just left - measured: a Cricket given a Pill leaves a
+             * CricketToken 1/1 in its own slot, and a Honey pet leaves a
+             * Bee. The slot is the one the trigger was about. */
+            const int dest = ctx->trigger_slot;
+            if (dest < 0 || s->team[dest].species != SAP2_SPECIES_EMPTY) {
+                break;
+            }
+            for (int c = 0; c < (count > 0 ? count : 1); c++) {
+                SapPet2 *p = &s->team[dest];
+                p->species = ab->param;
+                p->attack = (int8_t)attack;
+                p->health = (int8_t)health;
+                p->temp_attack = 0;
+                p->temp_health = 0;
+                p->level = (uint8_t)(ab->level ? ab->level : ctx->level);
+                p->xp = SAP2_LEVEL_REQUIREMENTS[p->level - 1];
+                p->perk = SAP2_PERK_NONE;
+                sap2_clamp_stats(p);
+            }
+            sap2_fire_watchers(s, SAP2_TRIG_SUMMON, dest);
+            break;
+        }
         default:
             break;
         }
+    }
+}
+
+/* A faint in the BUILD phase: the same BEFORE_DEATH / body leaves / DEATH
+ * sequence the battle uses, so a Cricket's token lands in the slot the
+ * body just vacated. Measured via sap/order_probe.py - the slot is left
+ * EMPTY and the line is not compacted. */
+static inline void sap2_seat_faint(SapSeat2 *s, int slot) {
+    const uint8_t species = s->team[slot].species;
+    Sap2Ctx ctx = {s, slot, slot, s->team[slot].level};
+
+    sap2_fire(species, SAP2_TRIG_BEFORE_DEATH, &ctx);
+    const uint8_t perk = s->team[slot].perk;
+    memset(&s->team[slot], 0, sizeof(s->team[slot]));
+    ctx.self_slot = -1;
+    sap2_fire(species, SAP2_TRIG_DEATH, &ctx);
+    if (perk != SAP2_PERK_NONE && SAP2_PERK_ABILITY[perk].trigger == SAP2_TRIG_DEATH) {
+        /* Honey's Bee lands in the build phase too - measured. */
+        const Sap2Ability *pa = &SAP2_PERK_ABILITY[perk];
+        if (s->team[slot].species == SAP2_SPECIES_EMPTY) {
+            s->team[slot].species = pa->param;
+            s->team[slot].attack = pa->attack;
+            s->team[slot].health = pa->health;
+            s->team[slot].level = pa->level ? pa->level : 1;
+            sap2_fire_watchers(s, SAP2_TRIG_SUMMON, slot);
+        }
+    }
+}
+
+/* Damage in the BUILD phase, and the reactions it causes. Same shape as
+ * the battle pipeline (damage, then the survivors' hurt triggers, then the
+ * faints) because that is what the shipped build does on either board -
+ * measured via sap/order_probe.py on a real board driven through the
+ * resolver's own PlaySpell:
+ *
+ *  - health goes to the exact NEGATIVE value; it is not clamped at 0, and
+ *    exactly 0 destroys just as -1 does;
+ *  - a destroyed pet leaves its slot EMPTY and the line is NOT compacted,
+ *    so the hole stays until something is dropped into it;
+ *  - the hurt trigger fires here too - a Peacock hit by two Pill-driven
+ *    Hedgehog faints ends +6 attack, not +3.
+ *
+ * Faints resolve highest attack first, the same queue order the battle
+ * uses; there is no coin flip on a tie here because a build-phase tie has
+ * not been measured and the shop RNG stream is the wrong place to guess. */
+static inline void sap2_seat_damage(SapSeat2 *s, const int *slots, int n, int amount) {
+    int dying[SAP2_TEAM];
+    int nd = 0;
+
+    for (int t = 0; t < n; t++) {
+        SapPet2 *p = &s->team[slots[t]];
+        if (p->species == SAP2_SPECIES_EMPTY) {
+            continue;
+        }
+        p->health = (int8_t)(p->health - amount);
+        if (sap2_pet_health(p) <= 0) {
+            dying[nd++] = slots[t];
+        } else {
+            Sap2Ctx hc = {s, slots[t], slots[t], p->level};
+            sap2_fire(p->species, SAP2_TRIG_HURT, &hc);
+        }
+    }
+
+    for (int i = 0; i < nd; i++) {
+        int pick = i;
+        for (int j = i + 1; j < nd; j++) {
+            if (sap2_pet_attack(&s->team[dying[j]]) > sap2_pet_attack(&s->team[dying[pick]])) {
+                pick = j;
+            }
+        }
+        const int tmp = dying[i];
+        dying[i] = dying[pick];
+        dying[pick] = tmp;
+    }
+    for (int t = 0; t < nd; t++) {
+        sap2_seat_faint(s, dying[t]);
     }
 }
 
@@ -1256,20 +1377,13 @@ static inline void sap2_buy_food(SapSeat2 *s, int food_slot, int target) {
     case SAP2_MUFFIN:
         sap2_apply_buff(p, 3, 3, SAP2_DUR_TEMP);
         break;
-    case SAP2_PILL: {
-        const uint8_t species = p->species;
-        const uint8_t perk = p->perk;
-        Sap2Ctx ctx = {s, target, target, p->level};
-        sap2_fire(species, SAP2_TRIG_BEFORE_DEATH, &ctx);
-        s->team[target].species = SAP2_SPECIES_EMPTY;
-        s->team[target].perk = SAP2_PERK_NONE;
-        ctx.self_slot = -1;
-        sap2_fire(species, SAP2_TRIG_DEATH, &ctx);
-        (void)perk; /* Honey's Bee is a battle-line summon; a build-phase
-                     * faint has no line to summon into - see the roster
-                     * note in docs/envs/sap-v2.md */
+    case SAP2_PILL:
+        /* Destroys the pet, and its faint runs the full sequence - the
+         * same one a battle faint runs, so a Pilled Cricket leaves a
+         * token in its slot and a Pilled Hedgehog's damage goes out over
+         * the rest of the team. */
+        sap2_seat_faint(s, target);
         break;
-    }
     default:
         break;
     }
@@ -1554,15 +1668,98 @@ static inline void sap2_battle_clamp(SapBattle2 *b, int side, int i) {
     }
 }
 
-/* Damage to one battle pet. Returns 1 if it fainted, so the caller can
- * resolve the faint in the order the phase requires. */
-static inline int sap2_battle_hurt(SapBattle2 *b, int side, int i, int amount) {
-    b->health[side][i] = (int8_t)(b->health[side][i] - amount);
-    return b->health[side][i] <= 0;
-}
+/* Damage, and the reactions it causes, in the order the shipped build
+ * resolves them - measured via policy-clash-re-tools (sap/order_probe.py,
+ * reading BattleState.EventLog out of the build's own RunBattle):
+ *
+ *   1. every target takes its damage;
+ *   2. every target that SURVIVED fires its hurt trigger. Survival is the
+ *      whole gate: a Peacock at 2/5 taking 4 gains +3 attack, taking
+ *      exactly 5 gains nothing at all - no trigger, not even a refusal -
+ *      and the damage type does not matter, an ability's damage fires it
+ *      exactly like an attack;
+ *   3. only then do the faints resolve, highest ATTACK first with a coin
+ *      flip on equal attack. That is the same queue order the exchange's
+ *      own simultaneous-faint case uses, and it is not the order the
+ *      engine's BeforeDeath EVENTS are queued in - the ordering applies to
+ *      the pending triggers, so reading the event log alone inverts it.
+ *
+ * Targets are named by id, not index, because resolving one faint shifts
+ * the line under the others. Exactly 0 health counts as a faint, measured. */
+#define SAP2_MAX_DAMAGE_TARGETS (2 * SAP2_TEAM)
+
+typedef struct {
+    int side;
+    uint8_t uid;
+} Sap2Target;
 
 static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                                      Sap2BattleCtx *ctx);
+static inline void sap2_battle_resolve_faint(SapBattle2 *b, uint64_t *rng, int side, int idx);
+
+static inline void sap2_battle_damage(SapBattle2 *b, uint64_t *rng, const Sap2Target *targets,
+                                       int n, int amount) {
+    Sap2Target dying[SAP2_MAX_DAMAGE_TARGETS];
+    int8_t dying_atk[SAP2_MAX_DAMAGE_TARGETS];
+    Sap2Target hurt[SAP2_MAX_DAMAGE_TARGETS];
+    int nd = 0, nh = 0;
+
+    for (int t = 0; t < n; t++) {
+        const int idx = sap2_battle_find(b, targets[t].side, targets[t].uid);
+        if (idx < 0) {
+            continue;
+        }
+        b->health[targets[t].side][idx] = (int8_t)(b->health[targets[t].side][idx] - amount);
+        if (b->health[targets[t].side][idx] <= 0) {
+            dying_atk[nd] = b->attack[targets[t].side][idx];
+            dying[nd++] = targets[t];
+        } else {
+            hurt[nh++] = targets[t];
+        }
+    }
+
+    for (int t = 0; t < nh; t++) {
+        const int idx = sap2_battle_find(b, hurt[t].side, hurt[t].uid);
+        if (idx < 0) {
+            continue;
+        }
+        Sap2BattleCtx ctx = {b, rng, hurt[t].side, idx, idx, b->level[hurt[t].side][idx],
+                             b->perk[hurt[t].side][idx]};
+        sap2_battle_fire(b->species[hurt[t].side][idx], SAP2_PERK_NONE, SAP2_TRIG_HURT, &ctx);
+    }
+
+    /* Highest attack first, a tie decided by a coin flip - selection sort,
+     * at most ten entries. */
+    for (int i = 0; i < nd; i++) {
+        int pick = i;
+        int tied = 1;
+        for (int j = i + 1; j < nd; j++) {
+            if (dying_atk[j] > dying_atk[pick]) {
+                pick = j;
+                tied = 1;
+            } else if (dying_atk[j] == dying_atk[pick]) {
+                tied++;
+                if ((int)(sap2_splitmix64(rng) % (uint64_t)tied) == 0) {
+                    pick = j;
+                }
+            }
+        }
+        if (pick != i) {
+            const Sap2Target tt = dying[i];
+            const int8_t ta = dying_atk[i];
+            dying[i] = dying[pick];
+            dying_atk[i] = dying_atk[pick];
+            dying[pick] = tt;
+            dying_atk[pick] = ta;
+        }
+    }
+    for (int t = 0; t < nd; t++) {
+        const int idx = sap2_battle_find(b, dying[t].side, dying[t].uid);
+        if (idx >= 0) {
+            sap2_battle_resolve_faint(b, rng, dying[t].side, idx);
+        }
+    }
+}
 
 /* The watcher fan-out: a trigger that is about one pet gets offered to
  * every other pet on that side, same as the shop phase's
@@ -1717,16 +1914,12 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                     }
                 }
             }
-            int fainted[SAP2_TEAM];
-            int fc = 0;
+            Sap2Target targets[SAP2_MAX_DAMAGE_TARGETS];
             for (int p = 0; p < k; p++) {
-                if (sap2_battle_hurt(b, enemy, picked[p], attack)) {
-                    fainted[fc++] = picked[p];
-                }
+                targets[p].side = enemy;
+                targets[p].uid = b->uid[enemy][picked[p]];
             }
-            for (int i = 0; i < fc; i++) {
-                sap2_battle_resolve_faint(b, ctx->rng, enemy, fainted[i]);
-            }
+            sap2_battle_damage(b, ctx->rng, targets, k, attack);
             break;
         }
         case SAP2_SEL_ALL_MINIONS: {
@@ -1734,21 +1927,19 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
              * randomness, no target count - measured, the finder carries no
              * Team filter and no Limit. Highest index first on each side so
              * removals cannot shift a pending target. */
+            Sap2Target targets[SAP2_MAX_DAMAGE_TARGETS];
+            int n = 0;
             for (int s2 = 0; s2 < 2; s2++) {
-                int fainted[SAP2_TEAM];
-                int fc = 0;
-                for (int i = b->count[s2] - 1; i >= 0; i--) {
+                for (int i = 0; i < b->count[s2]; i++) {
                     if (s2 == side && i == ctx->idx) {
-                        continue;
+                        continue; /* never its own target - measured */
                     }
-                    if (sap2_battle_hurt(b, s2, i, attack)) {
-                        fainted[fc++] = i;
-                    }
-                }
-                for (int i = 0; i < fc; i++) {
-                    sap2_battle_resolve_faint(b, ctx->rng, s2, fainted[i]);
+                    targets[n].side = s2;
+                    targets[n].uid = b->uid[s2][i];
+                    n++;
                 }
             }
+            sap2_battle_damage(b, ctx->rng, targets, n, attack);
             break;
         }
         case SAP2_SEL_TRIGGER_TARGET:
@@ -1929,10 +2120,50 @@ static inline int sap2_battle(SAP2 *env) {
         const int8_t a0 = b.attack[0][0], a1 = b.attack[1][0];
         const int8_t d0 = (int8_t)(a0 + (b.perk[0][0] == SAP2_PERK_MEAT_BONE ? 3 : 0));
         const int8_t d1 = (int8_t)(a1 + (b.perk[1][0] == SAP2_PERK_MEAT_BONE ? 3 : 0));
+        /* Who is directly behind each attacker, taken BEFORE the damage:
+         * measured, the friend-ahead trigger fires even when the pet that
+         * attacked died in this very exchange, and it is the pet in the
+         * cell immediately behind the attacker - exactly distance 1 in the
+         * living line - that reacts, not any friend further back. */
+        const int behind0 = b.count[0] > 1 ? (int)b.uid[0][1] : -1;
+        const int behind1 = b.count[1] > 1 ? (int)b.uid[1][1] : -1;
+        const uint8_t front0 = b.uid[0][0], front1 = b.uid[1][0];
+
         b.health[0][0] = (int8_t)(b.health[0][0] - d1);
         b.health[1][0] = (int8_t)(b.health[1][0] - d0);
         const int faint0 = b.health[0][0] <= 0;
         const int faint1 = b.health[1][0] <= 0;
+
+        /* Reactions first, faints after - measured: a Kangaroo behind a
+         * front that traded lethally still fires before that body leaves,
+         * and a hurt front that SURVIVED reacts before any faint resolves.
+         * A front that fainted does not react at all: survival is the
+         * whole gate on the hurt trigger. */
+        if (!faint0) {
+            Sap2BattleCtx hc = {&b, &env->battle_rng, 0, 0, 0, b.level[0][0], b.perk[0][0]};
+            sap2_battle_fire(b.species[0][0], SAP2_PERK_NONE, SAP2_TRIG_HURT, &hc);
+        }
+        if (!faint1) {
+            Sap2BattleCtx hc = {&b, &env->battle_rng, 1, 0, 0, b.level[1][0], b.perk[1][0]};
+            sap2_battle_fire(b.species[1][0], SAP2_PERK_NONE, SAP2_TRIG_HURT, &hc);
+        }
+        for (int side = 0; side < 2; side++) {
+            const int watcher_uid = side == 0 ? behind0 : behind1;
+            const int attacker_uid = side == 0 ? (int)front0 : (int)front1;
+            if (watcher_uid < 0) {
+                continue;
+            }
+            const int w = sap2_battle_find(&b, side, watcher_uid);
+            if (w < 0) {
+                continue;
+            }
+            const int a = sap2_battle_find(&b, side, attacker_uid);
+            Sap2BattleCtx kc = {&b,  &env->battle_rng, side, w, a,
+                                b.level[side][w], b.perk[side][w]};
+            sap2_battle_fire(b.species[side][w], SAP2_PERK_NONE,
+                             SAP2_TRIG_FRIEND_AHEAD_ATTACKED, &kc);
+        }
+
         if (!faint0 && !faint1) {
             continue;
         }
@@ -2050,11 +2281,45 @@ static inline int sap2_resolve_round(SAP2 *env) {
         }
         sap2_roll_shop(s, sap2_tier_for_turn(env->turn), pet_slots, food_slots);
         /* Start-of-turn abilities fire AFTER the roll and after the gold
-         * allowance is set: measured, Swan's gold lands on top of the
-         * turn's 10 (11 against an inert control's 10), and a Worm's
-         * stocked Apple sits in FRONT of that turn's freshly rolled food.
-         * Fired front to back, one pass over the team. */
+         * allowance is set: measured, the allowance is a SET rather than
+         * an add (a board forced to 0 gold and one forced to 37 both read
+         * 11 after a Swan's StartTurn), and a Worm's stocked Apple sits in
+         * FRONT of that turn's freshly rolled food.
+         *
+         * The queue is ordered by ATTACK, descending, with a random
+         * tie-break - the same rule the start-of-battle queue uses, and
+         * measured the same way: three Apples into one of a Swan/Worm pair
+         * flips which fires first, and at equal attack the order moves
+         * with the seed. Board position does not decide it. */
+        int order[SAP2_TEAM];
+        int n_start = 0;
         for (int t = 0; t < SAP2_TEAM; t++) {
+            if (s->team[t].species != SAP2_SPECIES_EMPTY) {
+                order[n_start++] = t;
+            }
+        }
+        for (int i = 0; i < n_start; i++) {
+            int pick = i;
+            int tied = 1;
+            for (int j = i + 1; j < n_start; j++) {
+                const int8_t aj = sap2_pet_attack(&s->team[order[j]]);
+                const int8_t ap = sap2_pet_attack(&s->team[order[pick]]);
+                if (aj > ap) {
+                    pick = j;
+                    tied = 1;
+                } else if (aj == ap) {
+                    tied++;
+                    if ((int)(sap2_splitmix64(&s->rng) % (uint64_t)tied) == 0) {
+                        pick = j;
+                    }
+                }
+            }
+            const int tmp = order[i];
+            order[i] = order[pick];
+            order[pick] = tmp;
+        }
+        for (int i = 0; i < n_start; i++) {
+            const int t = order[i];
             if (s->team[t].species == SAP2_SPECIES_EMPTY) {
                 continue;
             }
