@@ -1780,10 +1780,20 @@ static inline void sap2_battle_fire_watchers(SapBattle2 *b, uint64_t *rng, int s
 static inline void sap2_battle_resolve_faint(SapBattle2 *b, uint64_t *rng, int side, int idx) {
     const uint8_t species = b->species[side][idx];
     const uint8_t perk = b->perk[side][idx];
+    const uint8_t uid = b->uid[side][idx];
     Sap2BattleCtx ctx = {b, rng, side, idx, idx, b->level[side][idx], perk};
 
     sap2_battle_fire(species, perk, SAP2_TRIG_BEFORE_DEATH, &ctx);
-    sap2_battle_remove(b, side, idx);
+    /* The body is removed BY ID. Its own before-death effect can shift the
+     * line first - a Hedgehog's splash kills a Rat, whose death summons a
+     * Dirty Rat onto this side's front - and removing by the entry index
+     * then deletes the wrong body and leaves this corpse standing at
+     * negative health. That was the second half of the Tier-2 survivor
+     * divergence; the first half was the same mistake one level up. */
+    const int now = sap2_battle_find(b, side, uid);
+    if (now >= 0) {
+        sap2_battle_remove(b, side, now);
+    }
     ctx.idx = -1;
     sap2_battle_fire(species, perk, SAP2_TRIG_DEATH, &ctx);
 }
@@ -2090,7 +2100,7 @@ static inline void sap2_battle_start(SapBattle2 *b, uint64_t *rng) {
  * sap2_resolve_round's job once lives/trophies are applied. Does not
  * touch either seat's persistent team - see the file comment above
  * SapBattle2: fainting in battle costs a life, not the pet. */
-static inline int sap2_battle(SAP2 *env) {
+static inline int sap2_battle_ex(SAP2 *env, SapBattle2 *out) {
     SapBattle2 b;
     memset(&b, 0, sizeof(b));
     sap2_battle_load(&b, &env->seat[0], 0);
@@ -2167,21 +2177,38 @@ static inline int sap2_battle(SAP2 *env) {
         if (!faint0 && !faint1) {
             continue;
         }
+        /* Resolved BY ID, not by index. Resolving one side's faint can
+         * shift the other side's line under us - Rat's death summons its
+         * Dirty Rats onto the OPPONENT's front - and an index-0 second
+         * resolution then kills the freshly summoned token instead of the
+         * corpse it was aimed at, leaving a body standing at 0 health.
+         * That was a real divergence: 86 of 200 Tier-2 survivor boards. */
+        Sap2Target dead[2];
+        int nd = 0;
         if (faint0 && faint1) {
-            if (a0 == a1 ? (sap2_splitmix64(&env->battle_rng) & 1) : a0 > a1) {
-                sap2_battle_resolve_faint(&b, &env->battle_rng, 0, 0);
-                sap2_battle_resolve_faint(&b, &env->battle_rng, 1, 0);
-            } else {
-                sap2_battle_resolve_faint(&b, &env->battle_rng, 1, 0);
-                sap2_battle_resolve_faint(&b, &env->battle_rng, 0, 0);
-            }
+            const int first = a0 == a1 ? (int)(sap2_splitmix64(&env->battle_rng) & 1) : (a0 > a1 ? 0 : 1);
+            dead[nd].side = first;
+            dead[nd++].uid = first == 0 ? front0 : front1;
+            dead[nd].side = first ^ 1;
+            dead[nd++].uid = first == 0 ? front1 : front0;
         } else if (faint0) {
-            sap2_battle_resolve_faint(&b, &env->battle_rng, 0, 0);
+            dead[nd].side = 0;
+            dead[nd++].uid = front0;
         } else {
-            sap2_battle_resolve_faint(&b, &env->battle_rng, 1, 0);
+            dead[nd].side = 1;
+            dead[nd++].uid = front1;
+        }
+        for (int i = 0; i < nd; i++) {
+            const int idx = sap2_battle_find(&b, dead[i].side, dead[i].uid);
+            if (idx >= 0) {
+                sap2_battle_resolve_faint(&b, &env->battle_rng, dead[i].side, idx);
+            }
         }
     }
 
+    if (out) {
+        *out = b; /* the surviving line, for a differential harness */
+    }
     if (b.count[0] > 0 && b.count[1] == 0) {
         return 0;
     }
@@ -2189,6 +2216,16 @@ static inline int sap2_battle(SAP2 *env) {
         return 1;
     }
     return -1;
+}
+
+/* `out` exists so that a harness can compare the surviving LINE-UP, not
+ * just the winner, without keeping a second copy of this loop: the
+ * differential probe in policy-clash-re-tools used to replicate the
+ * ~30-line driver below, and that copy silently went stale the moment
+ * this one grew hurt triggers and a damage-time perk - 86 of 200 Tier-2
+ * boards were compared against a loop that no longer matched. */
+static inline int sap2_battle(SAP2 *env) {
+    return sap2_battle_ex(env, NULL);
 }
 
 /* Applies this round's life/trophy changes, advances turn/round, and
