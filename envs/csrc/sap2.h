@@ -1210,33 +1210,52 @@ static inline int sap2_can_buy_at(const SapSeat2 *s, int shop_slot, int dest) {
 }
 
 /* Frees `dest` by sliding the smallest block of pets that has somewhere to
- * go. Measured: with room behind the drop point the block from `dest`
- * backwards shifts back (pets at 1,2,3 + a drop on 2 -> 1, [new]2, 3, 4);
- * with no room behind, the block in front shifts forward instead (pets at
- * 2,3,4 + a drop on 3 -> 1, 2, [new]3, 4). Caller guarantees a free slot
- * exists. */
+ * go. FORWARD first - toward slot 0, which is the front of the line.
+ *
+ * Measured off the shipped build, driving its own PlayMinion onto an
+ * occupied drop point and reading the `Minions` grid back (the grid fronts
+ * at its HIGHEST cell, so cell c is team position SAP2_TEAM-1-c):
+ *
+ *   pets on cells 1,2,3 + a drop on cell 2 -> 1, [new]2, 3, 4
+ *   pets on cells 2,3,4 + a drop on cell 3 -> 1, 2, [new]3, 4
+ *
+ * i.e. in positions: pets at 1,2,3 with both ends free + a drop on 2 ->
+ * 0, 1, [new]2, 3 (the block from the drop point forward slid FORWARD,
+ * even with room behind it), and pets at 0,1,2 + a drop on 1 -> 0,
+ * [new]1, 2, 3 (the front is full, so the block behind slid back).
+ *
+ * Those two lines used to be read as sap2 slots directly, which is the
+ * mirror image of what they say and made this function slide the wrong
+ * way: it was the only build-phase rule with a direction, so nothing
+ * caught it until a whole build phase was carried into a battle
+ * (policy-clash-re-tools sap/difftest_match.py, which also prints the
+ * drive that pins the front: a Pig bought onto cell 0 and a Duck onto
+ * cell 4 carry into `BeforeAttackEarly(AttackerId=Duck)` - the highest
+ * cell attacks, so it is the front, so it is slot 0).
+ *
+ * Caller guarantees a free slot exists. */
 static inline void sap2_insert_gap(SapSeat2 *s, int dest) {
-    int behind = -1;
-    for (int i = dest + 1; i < SAP2_TEAM; i++) {
+    int ahead = -1;
+    for (int i = dest - 1; i >= 0; i--) {
         if (s->team[i].species == SAP2_SPECIES_EMPTY) {
-            behind = i;
+            ahead = i;
             break;
         }
     }
-    if (behind >= 0) {
-        for (int i = behind; i > dest; i--) {
-            s->team[i] = s->team[i - 1];
+    if (ahead >= 0) {
+        for (int i = ahead; i < dest; i++) {
+            s->team[i] = s->team[i + 1];
         }
     } else {
-        int front = -1;
-        for (int i = dest - 1; i >= 0; i--) {
+        int behind = -1;
+        for (int i = dest + 1; i < SAP2_TEAM; i++) {
             if (s->team[i].species == SAP2_SPECIES_EMPTY) {
-                front = i;
+                behind = i;
                 break;
             }
         }
-        for (int i = front; i < dest; i++) {
-            s->team[i] = s->team[i + 1];
+        for (int i = behind; i > dest; i--) {
+            s->team[i] = s->team[i - 1];
         }
     }
     s->team[dest].species = SAP2_SPECIES_EMPTY;
@@ -1554,6 +1573,14 @@ typedef struct {
     uint8_t uid[2][SAP2_TEAM];
     uint8_t next_uid[2];
     int count[2];
+    /* Set while a faint cascade is resolving. A before-death effect that
+     * deals damage (Hedgehog) must not start a SECOND cascade over the
+     * same pending bodies: the one already running picks the newly dying
+     * up on its next gather round, which is the measured shape - one
+     * batch, all the removals deferred to its end. Without this the two
+     * cascades re-process each other's corpses and recurse until the
+     * stack gives out. */
+    int cascading;
 } SapBattle2;
 
 /* Where the body with this id stands now, or -1 if it is gone. */
@@ -1701,14 +1728,160 @@ typedef struct {
 
 static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                                      Sap2BattleCtx *ctx);
-static inline void sap2_battle_resolve_faint(SapBattle2 *b, uint64_t *rng, int side, int idx);
 
+/* A faint CASCADE, in the shape the shipped build resolves one - measured
+ * via policy-clash-re-tools (sap/order_probe.py and sap/diag.py, reading
+ * BattleState.EventLog out of the build's own RunBattle):
+ *
+ *   1. every pet currently at <=0 health fires BEFORE_DEATH, highest
+ *      attack first with a coin flip on equal attack. Those effects can
+ *      drop more pets - a Hedgehog's splash, or a chain into a second
+ *      Hedgehog - and the newly dying join THIS batch rather than
+ *      starting a new one;
+ *   2. then every body in the batch leaves, all at once;
+ *   3. then every one of them fires DEATH, in the order they were killed.
+ *
+ * Step 3 after step 2 is the measurable part, and it is what a summon
+ * count turns on: a level-3 Rat lands three Dirty Rats because by the
+ * time its DEATH resolves the corpses in that line are gone, whereas
+ * resolving each faint end to end would have the tokens arrive while a
+ * body still occupied the cell and silently drop one. Four pets killed by
+ * one blast produce four DeathEarly events and then four Death events,
+ * never interleaved. */
+#define SAP2_MAX_CASCADE (2 * SAP2_TEAM)
+
+typedef struct {
+    Sap2Target who[SAP2_MAX_CASCADE];
+    uint8_t species[SAP2_MAX_CASCADE];
+    uint8_t perk[SAP2_MAX_CASCADE];
+    uint8_t level[SAP2_MAX_CASCADE];
+    int n;
+} Sap2Cascade;
+
+static inline int sap2_cascade_holds(const Sap2Cascade *c, int side, uint8_t uid) {
+    for (int i = 0; i < c->n; i++) {
+        if (c->who[i].side == side && c->who[i].uid == uid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Everyone at <=0 health who is not already in the batch, ordered highest
+ * attack first with a coin flip on ties. Exactly 0 counts as dying. */
+static inline int sap2_cascade_gather(SapBattle2 *b, uint64_t *rng, Sap2Cascade *c,
+                                       Sap2Target *out) {
+    int8_t atk[SAP2_MAX_CASCADE];
+    int n = 0;
+    for (int side = 0; side < 2; side++) {
+        for (int i = 0; i < b->count[side]; i++) {
+            if (b->health[side][i] > 0 || sap2_cascade_holds(c, side, b->uid[side][i])) {
+                continue;
+            }
+            atk[n] = b->attack[side][i];
+            out[n].side = side;
+            out[n].uid = b->uid[side][i];
+            n++;
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        int pick = i;
+        int tied = 1;
+        for (int j = i + 1; j < n; j++) {
+            if (atk[j] > atk[pick]) {
+                pick = j;
+                tied = 1;
+            } else if (atk[j] == atk[pick]) {
+                tied++;
+                if ((int)(sap2_splitmix64(rng) % (uint64_t)tied) == 0) {
+                    pick = j;
+                }
+            }
+        }
+        if (pick != i) {
+            const Sap2Target tt = out[i];
+            const int8_t ta = atk[i];
+            out[i] = out[pick];
+            atk[i] = atk[pick];
+            out[pick] = tt;
+            atk[pick] = ta;
+        }
+    }
+    return n;
+}
+
+/* Runs the whole cascade that is currently pending on the board. Safe to
+ * call when nothing is dying: it does nothing. */
+static inline void sap2_battle_cascade(SapBattle2 *b, uint64_t *rng) {
+    if (b->cascading) {
+        return; /* the cascade already running will collect these */
+    }
+    b->cascading = 1;
+
+    Sap2Cascade c;
+    c.n = 0;
+
+    for (;;) {
+        if (c.n >= SAP2_MAX_CASCADE) {
+            /* The batch is full - ten bodies is every cell on the board -
+             * so close it out. Anything still dying is picked up by the
+             * pass at the end of this function, after these removals have
+             * freed their cells. Without this exit the gather keeps
+             * returning the same overflow and the loop never ends. */
+            break;
+        }
+        Sap2Target found[SAP2_MAX_CASCADE];
+        const int n = sap2_cascade_gather(b, rng, &c, found);
+        if (n == 0) {
+            break;
+        }
+        for (int t = 0; t < n && c.n < SAP2_MAX_CASCADE; t++) {
+            const int idx = sap2_battle_find(b, found[t].side, found[t].uid);
+            if (idx < 0) {
+                continue;
+            }
+            const int slot = c.n++;
+            c.who[slot] = found[t];
+            c.species[slot] = b->species[found[t].side][idx];
+            c.perk[slot] = b->perk[found[t].side][idx];
+            c.level[slot] = b->level[found[t].side][idx];
+
+            Sap2BattleCtx ctx = {b,   rng, found[t].side, idx,
+                                 idx, c.level[slot], c.perk[slot]};
+            sap2_battle_fire(c.species[slot], c.perk[slot], SAP2_TRIG_BEFORE_DEATH, &ctx);
+        }
+    }
+
+    /* Every body leaves before any DEATH trigger fires. */
+    for (int t = 0; t < c.n; t++) {
+        const int idx = sap2_battle_find(b, c.who[t].side, c.who[t].uid);
+        if (idx >= 0) {
+            sap2_battle_remove(b, c.who[t].side, idx);
+        }
+    }
+    for (int t = 0; t < c.n; t++) {
+        Sap2BattleCtx ctx = {b, rng, c.who[t].side, -1, -1, c.level[t], c.perk[t]};
+        sap2_battle_fire(c.species[t], c.perk[t], SAP2_TRIG_DEATH, &ctx);
+    }
+    b->cascading = 0;
+    /* A DEATH trigger can kill again - a summoned body landing in front of
+     * something already at 0, or a future pet that damages on death - so
+     * one more pass once this batch is closed, but only if this batch
+     * actually took a body: an unconditional pass over an empty board
+     * recurses forever. */
+    if (c.n > 0) {
+        sap2_battle_cascade(b, rng);
+    }
+}
+
+/* Damage, its hurt reactions, and then whatever cascade it started. The
+ * hurt trigger is gated on SURVIVAL - measured: a Peacock at 2/5 taking 4
+ * gains +3 attack, taking exactly 5 gains nothing at all, not even a
+ * refusal - and it fires before any faint resolves. */
 static inline void sap2_battle_damage(SapBattle2 *b, uint64_t *rng, const Sap2Target *targets,
                                        int n, int amount) {
-    Sap2Target dying[SAP2_MAX_DAMAGE_TARGETS];
-    int8_t dying_atk[SAP2_MAX_DAMAGE_TARGETS];
     Sap2Target hurt[SAP2_MAX_DAMAGE_TARGETS];
-    int nd = 0, nh = 0;
+    int nh = 0;
 
     for (int t = 0; t < n; t++) {
         const int idx = sap2_battle_find(b, targets[t].side, targets[t].uid);
@@ -1716,10 +1889,7 @@ static inline void sap2_battle_damage(SapBattle2 *b, uint64_t *rng, const Sap2Ta
             continue;
         }
         b->health[targets[t].side][idx] = (int8_t)(b->health[targets[t].side][idx] - amount);
-        if (b->health[targets[t].side][idx] <= 0) {
-            dying_atk[nd] = b->attack[targets[t].side][idx];
-            dying[nd++] = targets[t];
-        } else {
+        if (b->health[targets[t].side][idx] > 0) {
             hurt[nh++] = targets[t];
         }
     }
@@ -1734,37 +1904,7 @@ static inline void sap2_battle_damage(SapBattle2 *b, uint64_t *rng, const Sap2Ta
         sap2_battle_fire(b->species[hurt[t].side][idx], SAP2_PERK_NONE, SAP2_TRIG_HURT, &ctx);
     }
 
-    /* Highest attack first, a tie decided by a coin flip - selection sort,
-     * at most ten entries. */
-    for (int i = 0; i < nd; i++) {
-        int pick = i;
-        int tied = 1;
-        for (int j = i + 1; j < nd; j++) {
-            if (dying_atk[j] > dying_atk[pick]) {
-                pick = j;
-                tied = 1;
-            } else if (dying_atk[j] == dying_atk[pick]) {
-                tied++;
-                if ((int)(sap2_splitmix64(rng) % (uint64_t)tied) == 0) {
-                    pick = j;
-                }
-            }
-        }
-        if (pick != i) {
-            const Sap2Target tt = dying[i];
-            const int8_t ta = dying_atk[i];
-            dying[i] = dying[pick];
-            dying_atk[i] = dying_atk[pick];
-            dying[pick] = tt;
-            dying_atk[pick] = ta;
-        }
-    }
-    for (int t = 0; t < nd; t++) {
-        const int idx = sap2_battle_find(b, dying[t].side, dying[t].uid);
-        if (idx >= 0) {
-            sap2_battle_resolve_faint(b, rng, dying[t].side, idx);
-        }
-    }
+    sap2_battle_cascade(b, rng);
 }
 
 /* The watcher fan-out: a trigger that is about one pet gets offered to
@@ -1779,29 +1919,6 @@ static inline void sap2_battle_fire_watchers(SapBattle2 *b, uint64_t *rng, int s
         Sap2BattleCtx ctx = {b, rng, side, i, trigger_idx, b->level[side][i], b->perk[side][i]};
         sap2_battle_fire(b->species[side][i], SAP2_PERK_NONE, trigger, &ctx);
     }
-}
-
-/* A pet's body leaves the line. BEFORE_DEATH has already fired; DEATH
- * fires once the slot is gone, because a summon takes its place. */
-static inline void sap2_battle_resolve_faint(SapBattle2 *b, uint64_t *rng, int side, int idx) {
-    const uint8_t species = b->species[side][idx];
-    const uint8_t perk = b->perk[side][idx];
-    const uint8_t uid = b->uid[side][idx];
-    Sap2BattleCtx ctx = {b, rng, side, idx, idx, b->level[side][idx], perk};
-
-    sap2_battle_fire(species, perk, SAP2_TRIG_BEFORE_DEATH, &ctx);
-    /* The body is removed BY ID. Its own before-death effect can shift the
-     * line first - a Hedgehog's splash kills a Rat, whose death summons a
-     * Dirty Rat onto this side's front - and removing by the entry index
-     * then deletes the wrong body and leaves this corpse standing at
-     * negative health. That was the second half of the Tier-2 survivor
-     * divergence; the first half was the same mistake one level up. */
-    const int now = sap2_battle_find(b, side, uid);
-    if (now >= 0) {
-        sap2_battle_remove(b, side, now);
-    }
-    ctx.idx = -1;
-    sap2_battle_fire(species, perk, SAP2_TRIG_DEATH, &ctx);
 }
 
 /* Is a battle-phase ability's condition satisfied? Hedgehog's is the only
@@ -2183,33 +2300,14 @@ static inline int sap2_battle_ex(SAP2 *env, SapBattle2 *out) {
         if (!faint0 && !faint1) {
             continue;
         }
-        /* Resolved BY ID, not by index. Resolving one side's faint can
-         * shift the other side's line under us - Rat's death summons its
-         * Dirty Rats onto the OPPONENT's front - and an index-0 second
-         * resolution then kills the freshly summoned token instead of the
-         * corpse it was aimed at, leaving a body standing at 0 health.
-         * That was a real divergence: 86 of 200 Tier-2 survivor boards. */
-        Sap2Target dead[2];
-        int nd = 0;
-        if (faint0 && faint1) {
-            const int first = a0 == a1 ? (int)(sap2_splitmix64(&env->battle_rng) & 1) : (a0 > a1 ? 0 : 1);
-            dead[nd].side = first;
-            dead[nd++].uid = first == 0 ? front0 : front1;
-            dead[nd].side = first ^ 1;
-            dead[nd++].uid = first == 0 ? front1 : front0;
-        } else if (faint0) {
-            dead[nd].side = 0;
-            dead[nd++].uid = front0;
-        } else {
-            dead[nd].side = 1;
-            dead[nd++].uid = front1;
-        }
-        for (int i = 0; i < nd; i++) {
-            const int idx = sap2_battle_find(&b, dead[i].side, dead[i].uid);
-            if (idx >= 0) {
-                sap2_battle_resolve_faint(&b, &env->battle_rng, dead[i].side, idx);
-            }
-        }
+        /* One cascade, not two hand-ordered faints: it finds everyone at
+         * <=0 health itself, orders them by attack with a coin flip on
+         * ties, and defers every removal until all the before-death
+         * effects have run - see sap2_battle_cascade. Doing it by hand
+         * here is what left bodies standing at negative health, because a
+         * resolution can shift the other side's line under the next one
+         * (Rat's death summons onto the OPPONENT's front). */
+        sap2_battle_cascade(&b, &env->battle_rng);
     }
 
     if (out) {
