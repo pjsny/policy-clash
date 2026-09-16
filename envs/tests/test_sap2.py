@@ -242,8 +242,17 @@ def test_a_bought_pet_goes_where_it_is_dropped(env):
 
 def test_dropping_a_pet_on_an_occupied_slot_inserts_and_shifts(env):
     """Measured: dropping a different species onto an occupied position
-    inserts it there and slides the neighbours - pets at 2,3 taking a drop
-    on 2 end up at 3,4. It does not swap and it does not fail."""
+    inserts it there and slides the neighbours FORWARD - toward the front
+    of the line - and only slides them back when the front is full. It
+    does not swap and it does not fail.
+
+    The direction was wrong here until a differential that carries a whole
+    build phase into a battle caught it (policy-clash-re-tools'
+    `sap/difftest_match.py`): insert is the only build-phase rule with a
+    direction, and the harness's shop drivers had been comparing sap2
+    slot i against the real grid's cell i, which is the mirror of the
+    verified battle mapping - the real grid fronts at its HIGHEST cell,
+    sap2 at slot 0. With both sides mirrored the old assertion passed."""
     for seed in range(200):
         probe = make(ENV_ID)
         result = probe.reset(seed=seed)
@@ -259,8 +268,9 @@ def test_dropping_a_pet_on_an_occupied_slot_inserts_and_shifts(env):
         assert shop_pet_species(result.observations[0].features, 0) == species[1]
         result = probe.step(buy(0, 2), seat1)  # different species, same position
         f = result.observations[0].features
-        assert team_species(f, 3) == first, "the sitting pet slid back"
+        assert team_species(f, 1) == first, "the sitting pet slid forward"
         assert team_species(f, 2) == species[1]
+        assert team_species(f, 3) == 0, "nothing slid back - the front had room"
         return
     pytest.fail("no seed in 200 gave two different species in the first two shop slots")
 
