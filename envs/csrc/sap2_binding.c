@@ -155,6 +155,173 @@ static PyObject *Sap2_get_turn(Sap2Object *self, void *closure) {
     return PyLong_FromLong(self->env.turn);
 }
 
+/* DEBUG/TEST ENTRY POINT - not part of the env's agent-facing API.
+ *
+ * One battle, resolved from two explicit line-ups. It exists because the
+ * match API cannot address a battle rule: reaching a named board through
+ * reset/buy/end_turn means searching seeds for a shop that offers the
+ * right pets at the right stats, which for a five-pet fixture is not
+ * reachable at all. The battle rules are the half of this env the shipped
+ * game was measured hardest against (policy-clash-re-tools'
+ * sap/difftest.py resolves thousands of boards in both engines), so they
+ * get an entry point of their own rather than no in-repo test at all.
+ *
+ * team0/team1 are front-to-back sequences of (species, level, attack,
+ * health) or (species, level, attack, health, perk). Returns
+ * (winner, side0, side1) - winner 0, 1 or -1 for a draw - with each side
+ * a list of (species, attack, health, level), front to back.
+ *
+ * Every field is range-checked before it reaches the rules core. This is
+ * a public C entry point reachable from Python, so a bad argument has to
+ * raise rather than index past an array or wrap an int8_t into a stat the
+ * engine can never produce. */
+static int sap2_load_debug_team(PyObject *rows, SapSeat2 *seat) {
+    PyObject *fast = PySequence_Fast(rows, "team must be a sequence");
+    if (fast == NULL) {
+        return -1;
+    }
+    const Py_ssize_t n = PySequence_Fast_GET_SIZE(fast);
+    if (n > SAP2_TEAM) {
+        PyErr_Format(PyExc_ValueError, "team of %zd pets exceeds the %d team slots", n,
+                     SAP2_TEAM);
+        Py_DECREF(fast);
+        return -1;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        /* Parsed as a SEQUENCE, not with PyArg_ParseTuple: that raises
+         * SystemError on a row that is not a tuple, and "internal error"
+         * is the wrong answer to a caller who passed a list or an int. */
+        PyObject *row = PySequence_Fast(PySequence_Fast_GET_ITEM(fast, i),
+                                        "each team entry must be a sequence");
+        if (row == NULL) {
+            Py_DECREF(fast);
+            return -1;
+        }
+        const Py_ssize_t width = PySequence_Fast_GET_SIZE(row);
+        if (width < 4 || width > 5) {
+            PyErr_Format(PyExc_ValueError,
+                         "team slot %zd: %zd fields, want (species, level, attack, "
+                         "health) or (species, level, attack, health, perk)",
+                         i, width);
+            Py_DECREF(row);
+            Py_DECREF(fast);
+            return -1;
+        }
+        long field[5] = {0, 0, 0, 0, SAP2_PERK_NONE};
+        for (Py_ssize_t f = 0; f < width; f++) {
+            PyObject *value = PySequence_Fast_GET_ITEM(row, f);
+            if (!PyLong_Check(value)) {
+                PyErr_Format(PyExc_TypeError, "team slot %zd field %zd is not an int", i, f);
+                Py_DECREF(row);
+                Py_DECREF(fast);
+                return -1;
+            }
+            field[f] = PyLong_AsLong(value);
+            if (field[f] == -1 && PyErr_Occurred()) { /* an int too big for a long */
+                Py_DECREF(row);
+                Py_DECREF(fast);
+                return -1;
+            }
+        }
+        Py_DECREF(row);
+        /* Widened to long above so that a huge value is REJECTED below
+         * rather than truncated into range on the way in. */
+        const long species = field[0], level = field[1];
+        const long attack = field[2], health = field[3], perk = field[4];
+        /* A species of 0 is SAP2_SPECIES_EMPTY - a hole, which this entry
+         * point does not take: pass a shorter list instead. The battle
+         * loads a seat by compacting it, so a hole would be invisible
+         * anyway and a caller expecting one would be misled. */
+        if (species <= 0 || species >= SAP2_NUM_ALL_SPECIES) {
+            PyErr_Format(PyExc_ValueError,
+                         "team slot %zd: species %ld is outside 1..%d", i, species,
+                         SAP2_NUM_ALL_SPECIES - 1);
+            Py_DECREF(fast);
+            return -1;
+        }
+        if (level < 1 || level > SAP2_MAX_LEVEL) {
+            PyErr_Format(PyExc_ValueError, "team slot %zd: level %ld is outside 1..%d", i,
+                         level, SAP2_MAX_LEVEL);
+            Py_DECREF(fast);
+            return -1;
+        }
+        if (attack < 0 || attack > SAP2_MAX_STATS || health < 1
+            || health > SAP2_MAX_STATS) {
+            PyErr_Format(PyExc_ValueError,
+                         "team slot %zd: %ld/%ld is outside attack 0..%d, health 1..%d", i,
+                         attack, health, SAP2_MAX_STATS, SAP2_MAX_STATS);
+            Py_DECREF(fast);
+            return -1;
+        }
+        if (perk < 0 || perk >= SAP2_NUM_PERKS) {
+            PyErr_Format(PyExc_ValueError, "team slot %zd: perk %ld is outside 0..%d", i,
+                         perk, SAP2_NUM_PERKS - 1);
+            Py_DECREF(fast);
+            return -1;
+        }
+        SapPet2 *p = &seat->team[i];
+        p->species = (uint8_t)species;
+        p->level = (uint8_t)level;
+        p->xp = SAP2_LEVEL_REQUIREMENTS[level - 1];
+        p->attack = (int8_t)attack;
+        p->health = (int8_t)health;
+        p->perk = (uint8_t)perk;
+    }
+    Py_DECREF(fast);
+    return 0;
+}
+
+static PyObject *sap2_line_out(const SapBattle2 *b, int side) {
+    PyObject *out = PyList_New(b->count[side]);
+    if (out == NULL) {
+        return NULL;
+    }
+    for (int i = 0; i < b->count[side]; i++) {
+        PyObject *row = Py_BuildValue("(iiii)", (int)b->species[side][i],
+                                      (int)b->attack[side][i], (int)b->health[side][i],
+                                      (int)b->level[side][i]);
+        if (row == NULL) {
+            Py_DECREF(out);
+            return NULL;
+        }
+        PyList_SET_ITEM(out, i, row);
+    }
+    return out;
+}
+
+static PyObject *Sap2_debug_resolve_battle(PyObject *Py_UNUSED(self), PyObject *args) {
+    PyObject *rows0 = NULL, *rows1 = NULL;
+    unsigned long long seed = 0;
+    if (!PyArg_ParseTuple(args, "OOK:debug_resolve_battle", &rows0, &rows1, &seed)) {
+        return NULL;
+    }
+    SAP2 env;
+    memset(&env, 0, sizeof(env));
+    if (sap2_load_debug_team(rows0, &env.seat[0]) < 0
+        || sap2_load_debug_team(rows1, &env.seat[1]) < 0) {
+        return NULL;
+    }
+    env.battle_rng = seed;
+
+    SapBattle2 b;
+    memset(&b, 0, sizeof(b));
+    const int winner = sap2_battle_ex(&env, &b);
+
+    PyObject *side0 = sap2_line_out(&b, 0);
+    PyObject *side1 = side0 == NULL ? NULL : sap2_line_out(&b, 1);
+    if (side1 == NULL) {
+        Py_XDECREF(side0);
+        return NULL;
+    }
+    return Py_BuildValue("(iNN)", winner, side0, side1);
+}
+
+static PyMethodDef sap2_functions[] = {
+    {"debug_resolve_battle", (PyCFunction)Sap2_debug_resolve_battle, METH_VARARGS,
+     "FOR TESTS AND DIFFERENTIAL HARNESSES, not for agents: resolve one "
+     "battle from two explicit line-ups. (winner, side0, side1)."},
+    {NULL, NULL, 0, NULL}};
+
 static PyMethodDef Sap2_methods[] = {
     {"reset", (PyCFunction)Sap2_reset, METH_O, "Start a new match from a seed."},
     {"step", (PyCFunction)Sap2_step, METH_VARARGS,
@@ -186,6 +353,7 @@ static struct PyModuleDef sap2_module = {
     .m_name = "policyclash_envs._sap2",
     .m_doc = "SAP2 (Super Auto Pets, full match) rules compiled from C.",
     .m_size = -1,
+    .m_methods = sap2_functions,
 };
 
 PyMODINIT_FUNC PyInit__sap2(void) {

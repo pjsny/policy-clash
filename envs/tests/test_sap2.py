@@ -18,6 +18,7 @@ from policyclash_envs.sap2 import (
     MAX_LEVEL,
     MAX_ROUNDS,
     MAX_SHOP_PETS,
+    MAX_STATS,
     MAX_TICKS,
     NUM_ACTIONS,
     NUM_PERKS,
@@ -778,3 +779,242 @@ def test_clone_continues_the_rng_stream_rather_than_restarting_it(env):
     assert fork_result.termination == real_result.termination
     assert fork.replay() == env.replay()
     assert fork.turn == env.turn
+
+
+# --------------------------------------------------------------------------
+# Battle rules, resolved from explicit line-ups.
+#
+# `resolve_battle` exists because the match API cannot address a battle
+# rule: reaching a named board through reset/buy/end_turn means searching
+# seeds for a shop that offers the right pets at the right stats, which for
+# a five-pet fixture is not reachable at all. Every expected value below is
+# the SHIPPED GAME's answer, read out of its own BoardResolver by hosting
+# its IL2CPP runtime (policy-clash-re-tools: sap/difftest.py resolves the
+# board in both engines, sap/diag.py dumps the engine's BattleState.EventLog
+# for it, sap/order_probe.py isolates the rule).
+
+CRICKET_SPECIES = 3        # sap2.h's species ids - see HORSE_SPECIES above
+DUCK_SPECIES = 4
+FISH_SPECIES = 5
+OTTER_SPECIES = 8
+PIG_SPECIES = 9
+CRAB_SPECIES = 11
+FLAMINGO_SPECIES = 12
+HEDGEHOG_SPECIES = 13
+RAT_SPECIES = 16
+CRICKET_TOKEN_SPECIES = 21
+DIRTY_RAT_SPECIES = 23
+
+# Enough seeds that a rule which only holds for one RNG word cannot pass.
+# Every fixture here is built with DISTINCT attacks among its simultaneous
+# faints, which is what makes it seed-independent: equal attack is a coin
+# flip in the shipped build as much as here (measured - one such board
+# split 0.518/0.482 over 600 seeds), so a fixture that leant on one would
+# not be testable at all.
+BATTLE_SEEDS = range(1, 25)
+
+
+def species_of(line: list[tuple]) -> list[int]:
+    return [row[0] for row in line]
+
+
+def resolve(team0: list[tuple], team1: list[tuple], seed: int) -> tuple:
+    from policyclash_envs.sap2 import debug_resolve_battle
+
+    return debug_resolve_battle(team0, team1, seed)
+
+
+def test_the_debug_battle_entry_point_refuses_bad_input():
+    """It is a public C entry point reachable from Python, so a bad
+    argument has to raise rather than index past an array or wrap an
+    int8_t into a stat the engine can never produce."""
+    good = [(PIG_SPECIES, 1, 1, 1)]
+    for bad in (
+        [(0, 1, 1, 1)],                                # SAP2_SPECIES_EMPTY
+        [(-1, 1, 1, 1)],
+        [(999, 1, 1, 1)],                              # past the species table
+        [(PIG_SPECIES, 0, 1, 1)],                      # level below 1
+        [(PIG_SPECIES, MAX_LEVEL + 1, 1, 1)],
+        [(PIG_SPECIES, 1, -1, 1)],                     # negative attack
+        [(PIG_SPECIES, 1, MAX_STATS + 1, 1)],          # past the stat cap
+        [(PIG_SPECIES, 1, 1, 0)],                      # a pet cannot start dead
+        [(PIG_SPECIES, 1, 1, MAX_STATS + 1)],
+        [(PIG_SPECIES, 1, 1, 1, NUM_PERKS)],           # past the perk table
+        [(PIG_SPECIES, 1, 1, 1, -1)],
+        [good[0]] * (TEAM_SLOTS + 1),                  # more pets than slots
+    ):
+        with pytest.raises(ValueError):
+            resolve(bad, good, 1)
+        with pytest.raises(ValueError):
+            resolve(good, bad, 1)
+
+    # Malformed SHAPES, not just out-of-range values. These used to come
+    # back as SystemError - "internal error" - because the rows were parsed
+    # with PyArg_ParseTuple, which refuses anything that is not a tuple.
+    for bad, expected in (
+        (None, TypeError),                             # not a sequence at all
+        (42, TypeError),
+        ([PIG_SPECIES], TypeError),                    # a row that is not a sequence
+        ([(PIG_SPECIES, 1)], ValueError),              # too few fields
+        ([()], ValueError),
+        ([(PIG_SPECIES, 1, 1, 1, 0, 0)], ValueError),  # too many fields
+        ([("Pig", 1, 1, 1)], TypeError),               # a field that is not an int
+        ([(PIG_SPECIES, None, 1, 1)], TypeError),
+        ([(2**200, 1, 1, 1)], OverflowError),          # wider than a C long
+    ):
+        with pytest.raises(expected):
+            resolve(bad, good, 1)
+        with pytest.raises(expected):
+            resolve(good, bad, 1)
+
+    # A list row is as good as a tuple, a short team is how a hole is
+    # expressed, and an empty side is legal.
+    assert resolve([[PIG_SPECIES, 1, 1, 1]], good, 1)[0] == -1
+    assert resolve([], good, 1)[0] == 1
+
+
+def test_a_summon_lands_in_the_cell_the_body_vacated():
+    """Not at the front of the line - the cell the dying pet just left.
+
+    Tier 1 could not tell the two apart: nothing there kills a pet that is
+    not already the front, so the vacated cell always WAS the front.
+    Hedgehog's splash is the first thing in this roster that separates
+    them, and it used to put a Cricket's token in front of a living friend
+    that should have stayed ahead of it.
+
+    Measured: a mid-line Cricket killed outright on the shipped build's
+    ten-cell battle grid leaves {5: Pig#1, 6: CricketToken#4, 7: Pig#3} -
+    the token in cell 6, exactly where the Cricket stood, with the
+    survivor in front and the survivor behind both untouched.
+    """
+    # p1's front Pig survives the splash, the mid-line Cricket does not,
+    # and the Pig behind it survives too: the token has a living friend on
+    # BOTH sides, which is the only arrangement that can see the difference.
+    hedgehog = [(HEDGEHOG_SPECIES, 1, 1, 1)]
+    line = [
+        (PIG_SPECIES, 1, 1, 9),
+        (CRICKET_SPECIES, 1, 1, 2),
+        (PIG_SPECIES, 1, 1, 9),
+    ]
+    for seed in BATTLE_SEEDS:
+        _, _, survivors = resolve(hedgehog, line, seed)
+        assert species_of(survivors) == [
+            PIG_SPECIES,
+            CRICKET_TOKEN_SPECIES,
+            PIG_SPECIES,
+        ], f"seed {seed}: {survivors}"
+
+
+def test_a_summon_pushes_whatever_filled_the_cell_it_aims_at():
+    """The target is a CELL, not a rank among the survivors.
+
+    Rat's Dirty Rats each take the opponent's FRONT cell and push the line
+    back; a Cricket's token then claims its own cell and pushes again. So
+    with three Dirty Rats landing on a side whose Cricket also died, one
+    Dirty Rat ends up IN FRONT of the token and two behind it - which no
+    "insert at the front" and no arithmetic on ranks reproduces.
+
+    Measured on this exact board: the shipped build ends with
+    {1: RatToken, 2: RatToken, 3: CricketToken, 4: RatToken}, i.e. front to
+    back RatToken, CricketToken, RatToken, RatToken.
+    """
+    mine = [
+        (FISH_SPECIES, 1, 3, 5),
+        (HEDGEHOG_SPECIES, 3, 6, 4),
+        (CRICKET_SPECIES, 1, 2, 4),
+    ]
+    theirs = [
+        (FISH_SPECIES, 1, 4, 6),
+        (FISH_SPECIES, 1, 2, 6),
+        (RAT_SPECIES, 2, 5, 8),
+        (RAT_SPECIES, 1, 3, 6),
+    ]
+    for seed in BATTLE_SEEDS:
+        winner, survivors, theirs_left = resolve(mine, theirs, seed)
+        assert winner == 0, f"seed {seed}"
+        assert theirs_left == []
+        assert species_of(survivors) == [
+            DIRTY_RAT_SPECIES,
+            CRICKET_TOKEN_SPECIES,
+            DIRTY_RAT_SPECIES,
+            DIRTY_RAT_SPECIES,
+        ], f"seed {seed}: {survivors}"
+
+
+def test_a_new_faint_competes_on_attack_with_the_faints_already_pending():
+    """The pending-faint set is a PRIORITY QUEUE on attack - not a fixed
+    batch, and not a stack.
+
+    Both boards below trade their fronts lethally, and the 5-attack
+    Hedgehog resolves first either way. Its splash drops p1's Flamingo
+    while p1's other Hedgehog is still waiting its turn. Whether the
+    Flamingo's +1/+1 reaches the Otter before that second splash is
+    decided purely by attack:
+
+      Flamingo 1 attack, pending Hedgehog 3 - the Hedgehog goes first and
+      the Otter takes 2 then 2 from 4 health and dies (measured: wiped in
+      1.000 of 120 seeds in the shipped build);
+      Flamingo 3 attack, pending Hedgehog 1 - the newcomer jumps the
+      queue, the Otter is buffed first and survives at 2/1 (measured:
+      1.000 of 120 seeds).
+
+    A fixed batch order gets the second wrong; a stack gets the first
+    wrong.
+    """
+    striker = [(HEDGEHOG_SPECIES, 1, 5, 1)]
+    for flamingo_attack, hedgehog_attack, expected in (
+        (1, 3, []),
+        (3, 1, [(OTTER_SPECIES, 2, 1, 1)]),
+    ):
+        line = [
+            (HEDGEHOG_SPECIES, 1, hedgehog_attack, 1),
+            (FLAMINGO_SPECIES, 1, flamingo_attack, 1),
+            (OTTER_SPECIES, 1, 1, 4),
+        ]
+        for seed in BATTLE_SEEDS:
+            _, _, survivors = resolve(striker, line, seed)
+            assert survivors == expected, (
+                f"Flamingo {flamingo_attack} attack vs pending Hedgehog "
+                f"{hedgehog_attack}, seed {seed}: {survivors}"
+            )
+
+
+def test_a_mid_faint_pet_cannot_be_targeted_or_healed_back():
+    """A body at <=0 health is still on the line - bodies do not leave
+    until the cascade closes - but no target finder can see it.
+
+    Measured two ways in the shipped build's own event log:
+
+    - it cannot be healed back. p0 [Flamingo 1/3, Crab L3 1/1] against p1
+      Hedgehog L2 3/1 wipes in all 120 seeds: the 3-attack Hedgehog's
+      splash takes the Crab to exactly 0 first, and the Flamingo's +1/+1
+      then finds nothing to buff - no FlamingoAbility cast appears in the
+      log at all. Letting the buff land on a body already at 0 left the
+      Crab alive at 2/1.
+    - and a positional finder steps OVER it. With a mid-faint Pig and then
+      a living Duck behind it, the log holds exactly one HealthGained and
+      it names the DUCK.
+    """
+    # The Crab's own start-of-battle takes it to 1/4; the splash is 4.
+    flamingo_and_crab = [(FLAMINGO_SPECIES, 1, 1, 3), (CRAB_SPECIES, 3, 1, 1)]
+    hedgehog = [(HEDGEHOG_SPECIES, 2, 3, 1)]
+    for seed in BATTLE_SEEDS:
+        assert resolve(flamingo_and_crab, hedgehog, seed) == (-1, [], []), f"seed {seed}"
+
+    # Stepping over: the Hedgehog front dies in the exchange and its splash
+    # kills the Flamingo and the Pig directly behind it, leaving the Duck.
+    # The Duck is the only living friend behind the Flamingo, so it takes
+    # the buff even though the Pig is nearer.
+    line = [
+        (HEDGEHOG_SPECIES, 1, 1, 1),
+        (FLAMINGO_SPECIES, 1, 2, 2),
+        (PIG_SPECIES, 1, 1, 2),
+        (DUCK_SPECIES, 1, 1, 30),
+    ]
+    wall = [(PIG_SPECIES, 1, 1, 40)]
+    for seed in BATTLE_SEEDS:
+        _, survivors, _ = resolve(line, wall, seed)
+        duck = [row for row in survivors if row[0] == DUCK_SPECIES]
+        assert duck, f"seed {seed}: the Duck should outlive the splash: {survivors}"
+        # base 1 attack, +1 from the Flamingo's faint.
+        assert duck[0][1] == 2, f"seed {seed}: Duck came out {duck[0]}"

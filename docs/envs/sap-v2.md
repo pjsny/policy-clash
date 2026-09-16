@@ -547,6 +547,53 @@ surviving line-ups, and Tier-2 exact survivors down from 86/200
 mismatching to 6/300 — the tail is under investigation and is recorded
 here rather than rounded off.
 
+## Pack scope: Turtle only, and the ladder is not
+
+Measured via `policy-clash-re-tools`' `sap/pack_probe.py`, driving the
+build's own `PackConstants`, `PackExtensions` and `GenerateBoard`.
+
+**A pack is a table swap, not a rules change.** No `*Constants` class in
+`SpacewoodCore2` keys anything on `Pack` - the only nine methods that take
+one either build the tables or are `PackConstants`' own accessors - and ten
+playable packs generated through the build's own `GenerateBoard` produce
+boards identical in every scalar field: 5 lives, 10 trophies, 10 gold a
+turn, the `[3,5,7,9,11]` tier schedule, 5/2 shop capacities, roll price 1.
+The only column that moves is the roll pool. So `sap2-v1` being Pack1-only
+is not hiding a constant, and a second pack would be new table rows and
+nothing else. (One pack-scoped flag does exist - `PackTemplate.CarryGold`,
+which would change gold carry-over - and it is set on exactly one pack,
+Pack7, which is unreleased.)
+
+**Pack1 is not a disjoint slice of the roster.** Four of its 60 species
+(Duck, Beaver, Dragon, Boar) and seven of its 18 foods (Apple, Pill,
+Canned Food, Pear, Chocolate, Steak, Melon) belong to other packs as well,
+and a shared item is the *same row* in each - tier, price and base stats
+are scalar fields on the template. The tables here are therefore correct
+as a membership query. The summoned tokens belong to no pack at all (148
+minion rows and 56 spell rows carry an empty pack set), so Cricket's
+token, the Bee and the Dirty Rat are shared by every pack.
+
+**The real ladder is cross-pack, and this env cannot express that.**
+`PackExtensions.GetPossibleOpponents(Pack1)` is a client-side table and it
+returns six packs - Pack1 through Pack5 and Danger - so a Turtle team
+really does meet teams built from other pools. The predicate keeps a pack
+that is released, playable, not custom-only and not "special"; the four
+deck packs (Custom, Challenge, Plus, Wacky) each return only themselves,
+i.e. forced mirror. The client is built for cross-pack pairings all the way
+down: `BoardModel` carries both `Pack` and `OpponentPack`, `BattleModel`
+holds two whole boards each with its own pack, and `UserVersusOpponent`,
+`VersusPlayerModel` and `PlaybackResultPlayer` all carry one.
+
+`sap2-v1` is a symmetric two-seat match in which both seats roll the same
+pool, so a cross-pack pairing is not representable here. That is the same
+deliberate scope difference as matchmaking itself (the real thing queues
+you against asynchronous ghost teams through a server this build does not
+contain), and it is recorded rather than modelled. **Unverified and not
+answerable from the shipped client:** which endpoint consumes
+`GetPossibleOpponents`, and how the ghost-board pool is sampled -
+`QueueArenaRequest` carries no pack at all (the pack is account state, set
+by `ChangePackRequest`), so the sampling lives entirely server-side.
+
 ## Appendix: roster rollout plan
 
 1. **Tier 1 — done.** Match engine + existing 10 pets/3 foods, verified

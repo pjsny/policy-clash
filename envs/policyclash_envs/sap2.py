@@ -61,6 +61,32 @@ STARTING_LIVES = _sap2.STARTING_LIVES
 TROPHIES_TO_WIN = _sap2.TROPHIES_TO_WIN
 MAX_ROUNDS = _sap2.MAX_ROUNDS
 
+
+def debug_resolve_battle(
+    team0: list[tuple], team1: list[tuple], seed: int
+) -> tuple[int, list[tuple], list[tuple]]:
+    """FOR TESTS AND DIFFERENTIAL HARNESSES. Not part of the agent-facing
+    API: nothing an agent does goes through here, and no bot should call it.
+
+    Resolves one battle from two explicit line-ups, which the match API
+    cannot express - reaching a named board through reset/buy/end_turn
+    means searching seeds for a shop that offers the right pets at the
+    right stats, and for a five-pet fixture that is not reachable at all.
+    The battle rules are the half of this env measured hardest against the
+    shipped game (see policy-clash-re-tools), so they get an entry point of
+    their own rather than no in-repo test at all.
+
+    team0/team1 are FRONT-TO-BACK sequences of (species ID, level, attack,
+    health) or (species ID, level, attack, health, perk) - the ids are
+    sap2.h's own, 1..23, not names; a hole is not
+    expressible, pass a shorter list. Returns (winner, side0, side1) with
+    winner 0, 1 or -1 for a draw, each side a front-to-back list of
+    (species, attack, health, level). Every field is range-checked and a
+    bad one raises ValueError.
+    """
+    return _sap2.debug_resolve_battle(team0, team1, seed)
+
+
 SPEC = EnvSpec(
     id="sap2",
     version=1,
