@@ -244,6 +244,14 @@ PyMODINIT_FUNC PyInit__sap2(void) {
         PyModule_AddIntConstant(module, "PERK_NONE", SAP2_PERK_NONE) < 0 ||
         PyModule_AddIntConstant(module, "PERK_HONEY", SAP2_PERK_HONEY) < 0 ||
         PyModule_AddIntConstant(module, "PERK_MEAT_BONE", SAP2_PERK_MEAT_BONE) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_GARLIC", SAP2_PERK_GARLIC) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_MELON", SAP2_PERK_MELON) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_BREAD", SAP2_PERK_BREAD) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_CHILI", SAP2_PERK_CHILI) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_PEANUT", SAP2_PERK_PEANUT) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_COCONUT", SAP2_PERK_COCONUT) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_MUSHROOM", SAP2_PERK_MUSHROOM) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_STEAK", SAP2_PERK_STEAK) < 0 ||
         PyModule_AddIntConstant(module, "STARTING_GOLD", SAP2_STARTING_GOLD) < 0 ||
         PyModule_AddIntConstant(module, "STARTING_LIVES", SAP2_STARTING_LIVES) < 0 ||
         PyModule_AddIntConstant(module, "TROPHIES_TO_WIN", SAP2_TROPHIES_TO_WIN) < 0 ||

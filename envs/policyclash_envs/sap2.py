@@ -1,16 +1,20 @@
-"""SAP2 (Super Auto Pets), the full Arena match - Tier 1 roster.
+"""SAP2 (Super Auto Pets), the full Arena match - the full Tier 1-6 roster.
 
 The actual multi-round Arena match: lives, trophies, a tier-gated shop
 that grows with the turn number, freeze, and the turn-3 life-back rule
 real Arena mode uses - not a single shop-phase-then-one-battle slice. See
-docs/envs/sap-v2.md for the design. The shop-phase numbers (level
+docs/envs/sap-v2.md for the design. The Tier 1/2 shop-phase numbers (level
 requirements, sell value, shop capacity per tier, Pigeon's free Bread
-Crumbs) were measured out of the shipped build by policy-clash-re-tools, not
-taken from a wiki.
+Crumbs) were measured out of the shipped build by policy-clash-re-tools;
+Tier 3-6's roster is from data/turtle_pack's scrape instead - no runtime
+access to the shipped build from this environment - see sap2.h's species
+enum for exactly what that distinction covers.
 
-Roster is still Tier 1 only (10 pets, 3 foods) - the *match engine* here
-is the real game's full structure; the pet roster is a separate, later
-expansion tracked in sap-v2.md's appendix.
+Roster reaches Tier 6 (60 pets, 17 rollable foods, plus summon-only
+tokens) - the full data/turtle_pack scrape, every tier it covers now
+shipped. The *match engine* here is the real game's full structure end to
+end; see sap-v2.md's appendix for each tier's own sourcing caveats and
+disclosed scope gaps.
 
 Rules live in C, under envs/csrc/sap2.h - self-contained, no dependency
 on any other env's files - with a thin CPython binding in
@@ -41,6 +45,19 @@ NUM_PERKS = _sap2.NUM_PERKS  # width of a team slot's perk one-hot
 PERK_NONE = _sap2.PERK_NONE
 PERK_HONEY = _sap2.PERK_HONEY
 PERK_MEAT_BONE = _sap2.PERK_MEAT_BONE  # Tier 2's Meat Bone
+PERK_GARLIC = _sap2.PERK_GARLIC  # Tier 3's Garlic
+PERK_MELON = _sap2.PERK_MELON  # Tier 3's Ox grants this directly; the food itself is Tier 6
+PERK_BREAD = _sap2.PERK_BREAD  # Tier 4's Bread
+PERK_CHILI = _sap2.PERK_CHILI  # Tier 4's Deer grants this directly; the food itself is Tier 5
+PERK_PEANUT = _sap2.PERK_PEANUT  # Tier 5's Scorpion grants this; no food anywhere in
+# data/turtle_pack's 61-item scrape grants Peanut, at any tier
+PERK_COCONUT = _sap2.PERK_COCONUT  # Tier 6's Gorilla grants this; like Peanut, no
+# food anywhere in the scrape grants it - Tier 6's Melon FOOD reuses Tier 3's
+# Melon perk (SAP2_PERK_MELON above), a different perk entirely
+PERK_MUSHROOM = _sap2.PERK_MUSHROOM  # Tier 6's Mushroom food; revives the holder on
+# faint as a fresh 1/1 - see sap2.h's perk enum for the disclosed scope gap
+PERK_STEAK = _sap2.PERK_STEAK  # Tier 6's Steak food; one-shot +20 attack on this
+# pet's next attack only
 
 # Layout, for consumers that decode features or build actions. Derived from
 # the C core rather than copied, so a widened block cannot leave a stale
@@ -89,7 +106,7 @@ _TERMINAL: dict[int, tuple[Outcome, Termination]] = {
 
 
 class Sap2:
-    """Two-player Super Auto Pets, full Arena match, Tier 1 roster.
+    """Two-player Super Auto Pets, full Arena match, the full Tier 1-6 roster.
 
     Each round is shaped exactly like sap-v1's single round - both seats
     act simultaneously during the shop phase, a seat that ends stops
