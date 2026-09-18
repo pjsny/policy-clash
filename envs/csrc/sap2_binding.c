@@ -409,6 +409,14 @@ PyMODINIT_FUNC PyInit__sap2(void) {
         PyModule_AddIntConstant(module, "MAX_EXP", SAP2_MAX_EXP) < 0 ||
         PyModule_AddIntConstant(module, "MAX_STATS", SAP2_MAX_STATS) < 0 ||
         PyModule_AddIntConstant(module, "NUM_PERKS", SAP2_NUM_PERKS) < 0 ||
+        /* The one-hot WIDTHS, exported rather than left to be derived by
+         * subtracting every other field from the slot width. That
+         * derivation is what broke the visualizer when a team slot gained
+         * two floats in Tier 3: argmax ran past the end of the species
+         * one-hot and returned an id no table has. */
+        PyModule_AddIntConstant(module, "NUM_ALL_SPECIES", SAP2_NUM_ALL_SPECIES) < 0 ||
+        PyModule_AddIntConstant(module, "NUM_SHOP_SPECIES", SAP2_NUM_SHOP_SPECIES) < 0 ||
+        PyModule_AddIntConstant(module, "NUM_FOODS", SAP2_NUM_FOODS) < 0 ||
         PyModule_AddIntConstant(module, "PERK_NONE", SAP2_PERK_NONE) < 0 ||
         PyModule_AddIntConstant(module, "PERK_HONEY", SAP2_PERK_HONEY) < 0 ||
         PyModule_AddIntConstant(module, "PERK_MEAT_BONE", SAP2_PERK_MEAT_BONE) < 0 ||

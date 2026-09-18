@@ -75,7 +75,10 @@ from policyclash_envs.sap2 import (  # noqa: E402 - after the rich imports on pu
     MAX_SHOP_PETS,
     MAX_LEVEL,
     NUM_ACTIONS,
+    NUM_ALL_SPECIES,
+    NUM_FOODS,
     NUM_PERKS,
+    NUM_SHOP_SPECIES,
     PERK_HONEY,
     PERK_MEAT_BONE,
     PERK_NONE,
@@ -90,34 +93,41 @@ TEAM_BASE = 4  # after gold(1) lives(1) trophies(1) turn(1)
 # width derived, because the species block has grown twice (10 pets, then
 # Tier 2's ten plus a third token) and the food block gained a price.
 TEAM_SLOT_WIDTH = TEAM_SLOT_FLOATS
-NUM_SPECIES = TEAM_SLOT_FLOATS - (2 + MAX_LEVEL + 1 + NUM_PERKS)
+NUM_SPECIES = NUM_ALL_SPECIES
 SHOP_PET_BASE = TEAM_BASE + TEAM_SLOTS * TEAM_SLOT_WIDTH
 SHOP_PET_SLOT_WIDTH = SHOP_PET_SLOT_FLOATS
-NUM_SHOP_SPECIES_ONEHOT = SHOP_PET_SLOT_FLOATS - 2
+NUM_SHOP_SPECIES_ONEHOT = NUM_SHOP_SPECIES + 1  # + the empty slot
 SHOP_FOOD_BASE = SHOP_PET_BASE + MAX_SHOP_PETS * SHOP_PET_SLOT_WIDTH
 SHOP_FOOD_SLOT_WIDTH = SHOP_FOOD_SLOT_FLOATS
-NUM_FOODS_ONEHOT = SHOP_FOOD_SLOT_FLOATS - 2
+NUM_FOODS_ONEHOT = NUM_FOODS
 
 SPECIES_NAME = {
     0: "-", 1: "Ant", 2: "Beaver", 3: "Cricket", 4: "Duck", 5: "Fish",
     6: "Horse", 7: "Mosquito", 8: "Otter", 9: "Pig", 10: "Pigeon",
     11: "Crab", 12: "Flamingo", 13: "Hedgehog", 14: "Kangaroo", 15: "Peacock",
     16: "Rat", 17: "Snail", 18: "Spider", 19: "Swan", 20: "Worm",
-    21: "Z.Cricket", 22: "Bee", 23: "Dirty Rat",
+    21: "Badger", 22: "Camel", 23: "Dodo", 24: "Dog", 25: "Dolphin",
+    26: "Elephant", 27: "Giraffe", 28: "Ox", 29: "Rabbit", 30: "Sheep",
+    31: "Z.Cricket", 32: "Bee", 33: "Dirty Rat", 34: "Ram",
 }
 SPECIES_EMOJI = {
     0: " ", 1: "🐜", 2: "🦫", 3: "🦗", 4: "🦆", 5: "🐟",
     6: "🐴", 7: "🦟", 8: "🦦", 9: "🐖", 10: "🕊",
     11: "🦀", 12: "🦩", 13: "🦔", 14: "🦘", 15: "🦚",
     16: "🐀", 17: "🐌", 18: "🕷", 19: "🦢", 20: "🪱",
-    21: "🦗", 22: "🐝", 23: "🐁",
+    21: "🦡", 22: "🐪", 23: "🦤", 24: "🐕", 25: "🐬",
+    26: "🐘", 27: "🦒", 28: "🐂", 29: "🐇", 30: "🐑",
+    31: "🦗", 32: "🐝", 33: "🐁", 34: "🐏",
 }
 FOOD_NAME = {
     0: "-", 1: "Apple", 2: "Honey", 3: "Meat Bone", 4: "Muffin", 5: "Pill",
-    6: "Bread Crumbs",
+    6: "Bread Crumbs", 7: "Better Apple", 8: "Best Apple",
+    9: "Cake", 10: "Garlic", 11: "Salad Bowl",
 }
-FOOD_EMOJI = {0: " ", 1: "🍎", 2: "🍯", 3: "🦴", 4: "🧁", 5: "💊", 6: "🥖"}
-PERK_EMOJI = {PERK_NONE: "", PERK_HONEY: "🍯", PERK_MEAT_BONE: "🦴"}
+FOOD_EMOJI = {0: " ", 1: "🍎", 2: "🍯", 3: "🦴", 4: "🧁", 5: "💊", 6: "🥖",
+              7: "🍏", 8: "🍐", 9: "🎂", 10: "🧄", 11: "🥗"}
+PERK_EMOJI = {PERK_NONE: "", PERK_HONEY: "🍯", PERK_MEAT_BONE: "🦴",
+              3: "🧄", 4: "🍈", 5: "🎂"}  # Garlic, Melon, Cake
 
 PAIRS = [(i, j) for i in range(5) for j in range(i + 1, 5)]
 

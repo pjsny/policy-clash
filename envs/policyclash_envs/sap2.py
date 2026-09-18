@@ -38,6 +38,13 @@ MAX_LEVEL = _sap2.MAX_LEVEL
 MAX_EXP = _sap2.MAX_EXP  # a pet stops stacking here (LevelRequirements[-1])
 MAX_STATS = _sap2.MAX_STATS  # BoardConstants.MaxStats - attack and health cap
 NUM_PERKS = _sap2.NUM_PERKS  # width of a team slot's perk one-hot
+# One-hot widths, exported rather than derived: a consumer that works out
+# the species width by subtracting the other fields from the slot width
+# breaks silently the moment a slot gains a field, which is exactly what
+# Tier 3 did to the visualizer.
+NUM_ALL_SPECIES = _sap2.NUM_ALL_SPECIES  # team slot species one-hot
+NUM_SHOP_SPECIES = _sap2.NUM_SHOP_SPECIES  # rollable species; shop one-hot is this + 1
+NUM_FOODS = _sap2.NUM_FOODS  # food slot one-hot
 PERK_NONE = _sap2.PERK_NONE
 PERK_HONEY = _sap2.PERK_HONEY
 PERK_MEAT_BONE = _sap2.PERK_MEAT_BONE  # Tier 2's Meat Bone

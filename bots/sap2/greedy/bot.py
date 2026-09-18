@@ -31,18 +31,28 @@ BUY_PET_BASE = 1    # +0..24: shop_slot*5 + team position
 COMBINE_BASE = 31   # +0..9: team slot pair
 
 TEAM_BASE = 4  # after gold(1) lives(1) trophies(1) turn(1)
-# 24 species one-hot, attack, health, 3 level one-hot, exp, 3 perk one-hot.
-NUM_SPECIES = 24
-TEAM_SLOT_WIDTH = 33
+# A team slot: species one-hot, attack, health, level one-hot, exp, perk
+# one-hot, sell bonus, food uses. A shop pet slot: species one-hot (plus
+# empty), hp bonus, frozen.
+#
+# Self-contained by the rule in `bots/README.md`, so these are copied from
+# the env rather than imported - and they go STALE when a block widens,
+# which is a real failure mode rather than a theoretical one: this bot was
+# silently decoding a Tier-2 layout after Tier 3 landed and its win rate
+# against `random` fell from 1804 to 1521 Elo before anyone read a number.
+# If the arena reports greedy barely beating random, check these first.
+NUM_SPECIES = 35        # SAP2_NUM_ALL_SPECIES
+TEAM_SLOT_WIDTH = 49    # SAP2_TEAM_SLOT_FLOATS
 SHOP_PET_BASE = TEAM_BASE + 5 * TEAM_SLOT_WIDTH
-# 21 shop-species one-hot (20 rollable + empty), hp bonus, frozen.
-NUM_SHOP_SPECIES = 21
-SHOP_PET_SLOT_WIDTH = 23
+NUM_SHOP_SPECIES = 31   # SAP2_NUM_SHOP_SPECIES + 1 for the empty slot
+SHOP_PET_SLOT_WIDTH = 33  # SAP2_SHOP_PET_SLOT_FLOATS
 
-# From sap2.h's SAP2_BASE_ATK / SAP2_BASE_HP, indexed by species:
-# empty, the ten Tier-1 pets, the ten Tier-2 pets, then the three tokens.
-BASE_ATK = [0, 2, 3, 1, 2, 2, 2, 2, 1, 4, 3, 4, 3, 4, 2, 2, 3, 2, 2, 1, 1, 0, 1, 1]
-BASE_HP = [0, 2, 2, 3, 2, 3, 1, 2, 4, 1, 2, 1, 2, 2, 2, 5, 6, 3, 2, 2, 4, 0, 1, 1]
+# From sap2.h's SAP2_BASE_ATK / SAP2_BASE_HP, indexed by species: empty,
+# the ten Tier-1 pets, Tier 2's ten, Tier 3's ten, then the tokens.
+BASE_ATK = [0, 2, 3, 1, 2, 2, 2, 2, 1, 4, 3, 4, 3, 4, 2, 2, 3, 2, 2, 1, 1,
+            6, 3, 4, 3, 4, 3, 1, 1, 1, 2, 0, 1, 1, 2]
+BASE_HP = [0, 2, 2, 3, 2, 3, 1, 2, 4, 1, 2, 1, 2, 2, 2, 5, 6, 3, 2, 2, 4,
+           3, 3, 2, 2, 3, 7, 2, 3, 2, 2, 0, 1, 1, 2]
 
 PAIRS = [(i, j) for i, j in combinations(range(5), 2)]
 
