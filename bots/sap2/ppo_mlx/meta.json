@@ -6,5 +6,5 @@
   "deps": [
     "mlx"
   ],
-  "notes": "PPO, 2x128 tanh, masked logits. 40 iters x 64 episodes against a pool of itself, greedy, and random. 65s on an M4 Pro GPU."
+  "notes": "PPO, 2x128 tanh, masked logits. Retrained for the tier-3 layout (722-float observation, 189 actions): 120 iters x 96 episodes, 1.01M learner transitions, 8m on an M3 Max GPU, against a pool of itself, greedy and random on seeds below 500000 - disjoint from the arena's evaluation range."
 }
