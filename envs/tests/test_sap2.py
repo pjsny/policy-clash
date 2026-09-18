@@ -2129,3 +2129,42 @@ def test_penguin_does_not_fire_without_a_level_two_friend():
 # what a shop pet's stats WOULD have been without a bonus on the slot.
 BASE_ATK_FOR_TEST = [0, 2, 3, 1, 2, 2, 2, 2, 1, 4, 3, 4, 3, 4, 2, 2, 3, 2, 2, 1, 1, 6, 3, 4, 3, 4, 3, 1, 1, 1, 2, 4, 3, 2, 4, 4, 2, 3, 3, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 5]
 BASE_HP_FOR_TEST = [0, 2, 2, 3, 2, 3, 1, 2, 4, 1, 2, 1, 2, 2, 2, 5, 6, 3, 2, 2, 4, 3, 3, 2, 2, 3, 7, 2, 3, 2, 2, 4, 6, 2, 6, 2, 3, 5, 5, 5, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 3]
+
+
+def test_the_built_extension_matches_the_header_it_was_built_from():
+    """A stale `.so` makes every other test in this file a lie.
+
+    This actually happened: a commit swept an in-progress `sap2.h` onto
+    `main`, the installed extension predated it, and the suite reported 84
+    green against bytes built from the previous header. A fresh build then
+    failed 15 tests. Nothing in the suite could see it, because every test
+    imports the extension and none of them reads the source.
+
+    So: parse the constants out of `sap2.h` and compare them to what the
+    loaded module reports. Cheap, and it fails loudly on exactly the
+    mismatch that produced a false green.
+    """
+    import re
+    from pathlib import Path
+
+    header = Path(__file__).resolve().parents[1] / "csrc" / "sap2.h"
+    src = header.read_text()
+
+    def define(name: str) -> int:
+        m = re.search(rf"#define\s+{name}\s+(\d+)", src)
+        assert m, f"{name} not found in {header}"
+        return int(m.group(1))
+
+    def enum_value(name: str) -> int:
+        m = re.search(rf"\b{name}\s*=\s*(\d+)", src)
+        assert m, f"{name} not found in {header}"
+        return int(m.group(1))
+
+    from policyclash_envs import sap2 as mod
+
+    assert mod.ROSTER_TIER == define("SAP2_ROSTER_TIER"), "stale extension: rebuild with `uv pip install -e .`"
+    assert mod.NUM_ALL_SPECIES == enum_value("SAP2_NUM_ALL_SPECIES"), "stale extension: rebuild"
+    assert mod.NUM_SHOP_SPECIES == enum_value("SAP2_NUM_SHOP_SPECIES"), "stale extension: rebuild"
+    assert mod.NUM_FOODS == enum_value("SAP2_NUM_FOODS"), "stale extension: rebuild"
+    assert mod.NUM_PERKS == enum_value("SAP2_NUM_PERKS"), "stale extension: rebuild"
+    assert mod.MAX_LEVEL == define("SAP2_MAX_LEVEL"), "stale extension: rebuild"
