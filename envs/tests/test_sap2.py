@@ -38,6 +38,22 @@ HORSE_SPECIES = 6         # sap2.h's species ids, Tier-1 Pack1 roster
 PIGEON_SPECIES = 10
 HONEY_FOOD = 2            # SAP2_HONEY
 BREAD_CRUMBS_FOOD = 6     # SAP2_BREAD_CRUMBS - Tier 2 foods took 3/4/5
+# Tier 3 (sap2.h's enum): pets 21-30, the Ram token 34, foods 9-11.
+BADGER_SPECIES = 21
+CAMEL_SPECIES = 22
+DODO_SPECIES = 23
+DOG_SPECIES = 24
+DOLPHIN_SPECIES = 25
+ELEPHANT_SPECIES = 26
+GIRAFFE_SPECIES = 27
+OX_SPECIES = 28
+RABBIT_SPECIES = 29
+SHEEP_SPECIES = 30
+RAM_SPECIES = 34
+BIRTHDAY_CAKE_FOOD = 9
+GARLIC_FOOD = 10
+SALAD_BOWL_FOOD = 11
+TIER3_PETS = frozenset(range(BADGER_SPECIES, SHEEP_SPECIES + 1))
 
 ENV_ID = "sap2-v1"
 
@@ -99,7 +115,7 @@ def env():
 # shipped roster (10 pets -> 20 plus tokens) and the food block gained a
 # price, and a hardcoded 11 or 13 here shows up as a nonsense failure
 # somewhere unrelated.
-NUM_SPECIES = TEAM_SLOT_FLOATS - (2 + MAX_LEVEL + 1 + NUM_PERKS)  # team one-hot
+NUM_SPECIES = TEAM_SLOT_FLOATS - (2 + MAX_LEVEL + 1 + NUM_PERKS + 2)  # team one-hot
 NUM_SHOP_SPECIES_ONEHOT = SHOP_PET_SLOT_FLOATS - 2                # shop one-hot
 NUM_FOODS_ONEHOT = SHOP_FOOD_SLOT_FLOATS - 2                      # food one-hot
 
@@ -802,8 +818,9 @@ CRAB_SPECIES = 11
 FLAMINGO_SPECIES = 12
 HEDGEHOG_SPECIES = 13
 RAT_SPECIES = 16
-CRICKET_TOKEN_SPECIES = 21
-DIRTY_RAT_SPECIES = 23
+SPIDER_SPECIES = 18
+CRICKET_TOKEN_SPECIES = 31   # the tokens moved up when Tier 3 landed
+DIRTY_RAT_SPECIES = 33
 
 # Enough seeds that a rule which only holds for one RNG word cannot pass.
 # Every fixture here is built with DISTINCT attacks among its simultaneous
@@ -1018,3 +1035,295 @@ def test_a_mid_faint_pet_cannot_be_targeted_or_healed_back():
         assert duck, f"seed {seed}: the Duck should outlive the splash: {survivors}"
         # base 1 attack, +1 from the Flamingo's faint.
         assert duck[0][1] == 2, f"seed {seed}: Duck came out {duck[0]}"
+
+
+# ---------------------------------------------------------------- Tier 3
+#
+# One test per rule the Tier-3 roster landed. Every number below was read
+# off the shipped build - `sap/ability_check.py --pet X --levels` for the
+# per-level amounts, `sap/tier3_drive.py` for the rules the template dump
+# cannot carry - and the drive that settles each one is named in the
+# docstring and again in sap2.h's row.
+#
+# The fixtures share one shape: a 0-ATTACK wall on the far side, so the
+# only damage on the near side is the ability under test, plus - where
+# the rule needs a faint - a 1-health killer in front of it. Health is
+# capped at MAX_STATS, so nothing here can out-stat that cap.
+
+WALL = (PIG_SPECIES, 1, 0, 50)        # hits nothing, outlives everything
+
+
+def killer(attack: int) -> tuple:
+    """A 1-health body that kills once and then dies to any attack."""
+    return (PIG_SPECIES, 1, attack, 1)
+
+
+def test_badger_splashes_half_its_attack_per_level_across_the_battle_line():
+    """Badger's faint deals floor(attack x 50% x level) to the nearest
+    living body EACH WAY, and "each way" crosses the fighting front.
+
+    Measured (sap/tier3_drive.py `badger_percent`, `badger_cross_team`):
+    7 attack deals 3 at level 1 and 10 at level 3 - floored, not rounded -
+    and a Badger alone at the front splashed the ENEMY front, which no
+    same-team reading of "adjacent" produces.
+    """
+    for level in (1, 2, 3):
+        splash = 7 * 50 * level // 100
+        for seed in BATTLE_SEEDS:
+            _, mine, theirs = resolve(
+                [(BADGER_SPECIES, level, 7, 1)], [(PIG_SPECIES, 1, 1, 50)], seed
+            )
+            assert mine == [], f"L{level} seed {seed}: the Badger trades lethally"
+            # 50, minus the 7 the Badger hit for, minus the splash its
+            # faint put across the line into the same body.
+            assert theirs == [(PIG_SPECIES, 1, 50 - 7 - splash, 1)], (
+                f"L{level} seed {seed}: {theirs}"
+            )
+
+
+def test_camel_buffs_the_friend_behind_even_when_the_hurt_was_lethal():
+    """Camel gives the nearest friend behind +1 attack and +2 health per
+    level when hurt, and the hurt trigger is NOT gated on surviving.
+
+    Measured (sap/tier3_drive.py `camel_no_friend`): a Camel taken to
+    exactly 0 still handed its buff over, where a Peacock taken to 0
+    gained nothing - the difference is that a mid-faint body is not a
+    legal TARGET and Peacock targets itself.
+    """
+    for level in (1, 2, 3):
+        line = [(CAMEL_SPECIES, level, 1, 4), (PIGEON_SPECIES, 1, 0, 20)]
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(line, [killer(9), WALL], seed)
+            assert mine == [(PIGEON_SPECIES, level, 20 + 2 * level, 1)], (
+                f"L{level} seed {seed}: {mine}"
+            )
+
+
+def test_dodo_hands_half_its_attack_to_the_friend_ahead_at_start_of_battle():
+    """Dodo gives floor(own attack x 50% x level) ATTACK - and no health -
+    to the nearest friend ahead, once, before the first exchange.
+
+    Measured (sap/tier3_drive.py `dodo_percent`): 1 attack at level 1
+    buffs nothing at all, 9 at level 3 buffs +13; the same floored
+    multiplier Badger uses.
+    """
+    for level in (1, 2, 3):
+        gain = 7 * 50 * level // 100
+        line = [(PIGEON_SPECIES, 1, 0, 20), (DODO_SPECIES, level, 7, 20)]
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(line, [WALL], seed)
+            front = [row for row in mine if row[0] == PIGEON_SPECIES]
+            assert front == [(PIGEON_SPECIES, gain, 20, 1)], (
+                f"L{level} seed {seed}: {mine}"
+            )
+
+
+def test_dolphin_shoots_the_lowest_health_enemy_once_per_level():
+    """Dolphin deals a flat 4 to the fewest-health living enemy, level-many
+    times, re-picking between shots.
+
+    Measured (sap/tier3_drive.py `dolphin`): a level-3 Dolphin facing
+    enemies of 30, 6 and 20 health spent two shots on the 6-health one and
+    the third on the 20-health one, so the pick is re-made per shot and a
+    body already at <=0 is no longer a candidate.
+    """
+    for level in (1, 2, 3):
+        for seed in BATTLE_SEEDS:
+            _, _, theirs = resolve(
+                [(DOLPHIN_SPECIES, level, 0, 20)],
+                [(PIG_SPECIES, 1, 0, 30), (PIG_SPECIES, 1, 0, 40)],
+                seed,
+            )
+            # every shot lands on the 30-health one; the 40 is untouched
+            assert theirs == [
+                (PIG_SPECIES, 0, 30 - 4 * level, 1),
+                (PIG_SPECIES, 0, 40, 1),
+            ], f"L{level} seed {seed}: {theirs}"
+
+
+def test_elephant_hits_the_friend_behind_once_per_level_after_it_attacks():
+    """Elephant deals 1 to the nearest friend behind after every attack it
+    makes, level-many times.
+
+    Measured (sap/tier3_drive.py `elephant_no_target`): a 1/2 Cricket
+    behind a level-3 Elephant took 1 and 1 and the third shot landed on
+    nothing, because the Cricket was mid-faint by then; and the volley
+    fires even in the exchange the Elephant dies in.
+    """
+    for level in (1, 2, 3):
+        # 50 attack wipes the wall in one exchange, so exactly one volley
+        line = [(ELEPHANT_SPECIES, level, 50, 20), (PIGEON_SPECIES, 1, 0, 40)]
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(line, [WALL], seed)
+            friend = [row for row in mine if row[0] == PIGEON_SPECIES]
+            assert friend == [(PIGEON_SPECIES, 0, 40 - level, 1)], (
+                f"L{level} seed {seed}: {mine}"
+            )
+
+
+def test_dog_gains_a_temporary_buff_whenever_a_friend_is_summoned():
+    """Dog gains +2 attack and +1 health per level every time a friend is
+    summoned - a Cricket's faint token here.
+
+    Measured: the buff carries Duration = Temp, so it lands in the
+    temporary halves and is gone by the next turn exactly like Horse's; a
+    Dirty Rat arriving on this side does NOT wake it, because that summon
+    carries the build's TriggerDisabled (sap/tier3_drive.py
+    `dog_any_summon`).
+    """
+    for level in (1, 2, 3):
+        line = [(CRICKET_SPECIES, 1, 0, 1), (DOG_SPECIES, level, 0, 20)]
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(line, [killer(5), WALL], seed)
+            dog = [row for row in mine if row[0] == DOG_SPECIES]
+            assert dog == [(DOG_SPECIES, 2 * level, 20 + level, level)], (
+                f"L{level} seed {seed}: {mine}"
+            )
+
+
+def test_ox_takes_a_melon_shield_when_the_friend_ahead_faints():
+    """Ox gains the Melon perk and a flat +1 attack when the friend in the
+    cell DIRECTLY ahead faints.
+
+    Measured (sap/tier3_drive.py `ox_friend_ahead`, `ox_limit`,
+    `melon_perk`): only distance 1 counts - with two friends ahead dying
+    in one blast a level-3 Ox still fired once - the cap is level-many
+    activations a turn, and the Melon blocks 20 damage once.
+    """
+    for level in (1, 2, 3):
+        line = [(PIGEON_SPECIES, 1, 0, 1), (OX_SPECIES, level, 1, 20)]
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(line, [killer(5), WALL], seed)
+            # +1 attack, and the shield ate the killer's 5 damage whole
+            assert mine == [(OX_SPECIES, 2, 20, level)], f"L{level} seed {seed}: {mine}"
+
+    # Two ahead is not distance 1: the Ox reacts to the body next to it
+    # and to nothing further away, so with a living friend in between it
+    # gains nothing when the front dies.
+    # The middle body kills the killer in the exchange after the front
+    # dies, so nothing ever faints in the cell next to the Ox.
+    far = [
+        (PIGEON_SPECIES, 1, 0, 1),
+        (PIGEON_SPECIES, 1, 1, 40),
+        (OX_SPECIES, 1, 1, 20),
+    ]
+    for seed in BATTLE_SEEDS:
+        _, mine, _ = resolve(far, [killer(5), WALL], seed)
+        ox = [row for row in mine if row[0] == OX_SPECIES]
+        assert ox == [(OX_SPECIES, 1, 20, 1)], f"seed {seed}: {mine}"
+
+
+def test_sheep_leaves_two_rams_in_the_cell_it_vacated():
+    """Sheep's faint summons TWO Rams at 2/2 per level, at its own level,
+    both aimed at the cell the body left, the second pushing the first.
+
+    Measured (sap/tier3_drive.py `sheep_cells`): mid-line the two Rams end
+    in the Sheep's own cell and the one behind it, with the friend that
+    was behind pushed one further back; on a full line only one lands.
+    """
+    for level in (1, 2, 3):
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(
+                [(SHEEP_SPECIES, level, 1, 1)], [killer(5), WALL], seed
+            )
+            rams = [row for row in mine if row[0] == RAM_SPECIES]
+            assert len(rams) == 2, f"L{level} seed {seed}: {mine}"
+            for ram in rams:
+                assert ram[1] == 2 * level and ram[3] == level, (
+                    f"L{level} seed {seed}: {ram}"
+                )
+
+
+def test_spider_summons_a_random_tier_3_pet_at_two_per_level():
+    """With a Tier-3 roster present, Spider's faint finally summons
+    something: one rollable tier-3 pet at 2/2, 4/4 or 6/6 by level, at the
+    Spider's own level, in the cell the body vacated.
+
+    This is the hole Tier 2 shipped with on purpose - see sap2.h's
+    SAP2_ROSTER_TIER. Measured (sap/tier3_drive.py `spider_summon`): 200
+    drives per level landed exactly the ten tier-3 rollables, 19-21
+    apiece, at those stats and that level.
+    """
+    seen = set()
+    for level in (1, 2, 3):
+        for seed in range(1, 200):
+            _, mine, _ = resolve(
+                [(SPIDER_SPECIES, level, 1, 1)], [killer(5), WALL], seed
+            )
+            assert len(mine) == 1, f"L{level} seed {seed}: {mine}"
+            species, attack, _, body_level = mine[0]
+            assert species in TIER3_PETS, f"L{level} seed {seed}: {mine[0]}"
+            assert attack == 2 * level and body_level == level, (
+                f"L{level} seed {seed}: {mine[0]}"
+            )
+            if level == 1:
+                seen.add(species)
+    assert seen == set(TIER3_PETS), f"the draw should reach every tier-3 pet: {seen}"
+
+
+def test_garlic_takes_two_off_every_hit_with_a_floor_of_two():
+    """Garlic is permanent and takes 2 off every incoming hit, but never
+    below 2 and never above what was coming.
+
+    Measured (sap/tier3_drive.py `garlic_perk`): 1 -> 1, 2 -> 2, 3 -> 2,
+    4 -> 2, 5 -> 3, 10 -> 8, 25 -> 23, four hits in a row each reduced
+    with the perk still on, and ability damage reduced like an attack.
+    """
+    from policyclash_envs.sap2 import PERK_GARLIC
+
+    for swing, taken in ((1, 1), (2, 2), (3, 2), (4, 2), (5, 3), (10, 8)):
+        line = [(PIGEON_SPECIES, 1, 1, 40, PERK_GARLIC)]
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(line, [killer(swing)], seed)
+            assert mine == [(PIGEON_SPECIES, 1, 40 - taken, 1)], (
+                f"{swing} damage, seed {seed}: {mine}"
+            )
+
+
+def test_melon_blocks_twenty_damage_once():
+    """Melon is a one-shot shield worth 20 - the perk Ox grants.
+
+    Measured (sap/tier3_drive.py `melon_perk`): 1, 5 and 20 damage all
+    land as 0, 21 lands as 1, 25 as 5, and the perk is gone afterwards
+    whatever the amount was, so the next hit is unreduced.
+    """
+    from policyclash_envs.sap2 import PERK_MELON
+
+    for swing, taken in ((5, 0), (20, 0), (21, 1), (25, 5)):
+        line = [(PIGEON_SPECIES, 1, 1, 40, PERK_MELON)]
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(line, [killer(swing)], seed)
+            assert mine == [(PIGEON_SPECIES, 1, 40 - taken, 1)], (
+                f"{swing} damage, seed {seed}: {mine}"
+            )
+
+
+def test_tier_three_widened_the_roster_the_perks_and_the_team_slot():
+    """The three rules with no battle lever at all, pinned where they are
+    observable: the roster cap, the perk block and the team slot's width.
+
+    Rabbit's three-plays-a-turn cap, Birthday Cake's +1 sell value per
+    turn and Salad Bowl's two random friends are shop-phase rules; each
+    is driven against the shipped build in sap/tier3_drive.py
+    (`rabbit_limit`, `birthday_cake_perk`, `salad_bowl`) and diffed
+    action-for-action by sap/fuzz_shop.py, which is where a divergence
+    would show. What the env owes them is state to live in, and that is
+    what this checks: two more per-pet numbers in the observation (the
+    sell bonus a cake has added and the activations spent this turn) and
+    three more perk ids.
+    """
+    from policyclash_envs.sap2 import (
+        PERK_BIRTHDAY_CAKE,
+        PERK_GARLIC,
+        PERK_MELON,
+        ROSTER_TIER,
+    )
+
+    assert ROSTER_TIER == 3
+    assert len({PERK_NONE, PERK_HONEY, PERK_GARLIC, PERK_MELON, PERK_BIRTHDAY_CAKE}) == 5
+    assert NUM_PERKS == 6
+    # 34 species ids (30 rollable + 4 tokens), and the slot carries the
+    # one-hot, attack, health, the level one-hot, exp, the perk one-hot,
+    # the sell bonus and the uses counter.
+    assert NUM_SPECIES == 35
+    assert TEAM_SLOT_FLOATS == NUM_SPECIES + 2 + MAX_LEVEL + 1 + NUM_PERKS + 2

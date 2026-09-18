@@ -1,4 +1,4 @@
-"""SAP2 (Super Auto Pets), the full Arena match - Tier 1 roster.
+"""SAP2 (Super Auto Pets), the full Arena match - Tier 1-3 roster.
 
 The actual multi-round Arena match: lives, trophies, a tier-gated shop
 that grows with the turn number, freeze, and the turn-3 life-back rule
@@ -41,6 +41,9 @@ NUM_PERKS = _sap2.NUM_PERKS  # width of a team slot's perk one-hot
 PERK_NONE = _sap2.PERK_NONE
 PERK_HONEY = _sap2.PERK_HONEY
 PERK_MEAT_BONE = _sap2.PERK_MEAT_BONE  # Tier 2's Meat Bone
+PERK_GARLIC = _sap2.PERK_GARLIC  # Tier 3: -2 on every hit, permanent
+PERK_MELON = _sap2.PERK_MELON  # Tier 3: blocks 20 damage, once (Ox grants it)
+PERK_BIRTHDAY_CAKE = _sap2.PERK_BIRTHDAY_CAKE  # Tier 3: +1 sell value per turn
 
 # Layout, for consumers that decode features or build actions. Derived from
 # the C core rather than copied, so a widened block cannot leave a stale
@@ -115,7 +118,7 @@ _TERMINAL: dict[int, tuple[Outcome, Termination]] = {
 
 
 class Sap2:
-    """Two-player Super Auto Pets, full Arena match, Tier 1 roster.
+    """Two-player Super Auto Pets, full Arena match, Tier 1-3 roster.
 
     Each round is shaped exactly like sap-v1's single round - both seats
     act simultaneously during the shop phase, a seat that ends stops

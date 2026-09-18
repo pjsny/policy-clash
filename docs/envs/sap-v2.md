@@ -15,8 +15,9 @@ don't imply the earlier version is present anywhere in this repo.
 
 Implementation: `envs/csrc/sap2.h` / `sap2_binding.c` /
 `envs/policyclash_envs/sap2.py`, registered as `sap2-v1`. Roster is Tier 1
-(10 pets) plus Tier 2 (10 more, unlocked turn 3+ per the tier schedule
-below) and their foods — see "Tier 2 roster" below for what shipped, what
+(10 pets) plus Tiers 2 and 3 (20 more, unlocked turn 3+ per the tier
+schedule below) and their foods — see "Tier 2 roster" and "Tier 3
+roster" below for what shipped, what
 was measured, and the two abilities still deferred. 21 tests in
 `envs/tests/test_sap2.py` (70 total with connect4 and tron-duel's own
 suites), plus a 2000-match random-legal-play fuzz run at the Python level
@@ -56,11 +57,11 @@ Current state of that diff:
   agree on winner and on both surviving line-ups.
   `policy-clash-re-tools`'s `sap/difftest.py --holes`.
 - **Known remaining gaps**, now roster scope only:
-  - Tier 1 + Tier 2 (Pack1). The real game unlocks tiers 2–6 on turns
+  - Tiers 1–3 (Pack1). The real game unlocks tiers 2–6 on turns
     3/5/7/9/11 and rolls those species (measured: a turn-5 shop offered
-    Badger/Crab/Swan/Hedgehog — Badger is Tier 3, still out of scope).
-    sap2 now has Tier 2 fully in the roll pool from turn 3 on; Tiers 3–6
-    still have nothing to put behind the gate — see the appendix.
+    Badger/Crab/Swan/Hedgehog — all three tiers, and all three are now
+    in scope). Tiers 4–6 still have nothing to put behind the gate — see
+    the appendix.
   - Two Tier-2 abilities are explicit no-ops, not silently wrong:
     Hedgehog's Faint damage (needs a general "resolve every pet at ≤0
     health, anywhere on either board, recursively" pass that the battle
@@ -134,7 +135,7 @@ schedule and the level thresholds — are called out where they appear.
 | Gold | 10 once | 10 **every** round (does not carry over) |
 | Freeze | not modeled (no next turn to persist into) | real mechanic: frozen shop items persist into the next roll, in the leftmost slot(s) |
 | Win condition | one battle's Outcome | first to 10 trophies, or opponent's 5 lives hit 0 |
-| Roster | Tier 1 (10 pets, 2 foods) | Tier 1 + Tier 2's rules (20 pets, 6 foods + 2 Worm-only Apples); only Tier 1 is *rollable* yet — see the roster note. Tiers 3–6 are follow-on phases |
+| Roster | Tier 1 (10 pets, 2 foods) | Tiers 1–3 (30 pets, 8 rollable foods + 2 Worm-only Apples + Pigeon's crumbs), all rollable on the tier schedule. Tiers 4–6 are follow-on phases |
 
 ## Match rules (measured from the shipped build)
 
@@ -329,13 +330,15 @@ reads the perk model, and `sap/food_probe.py` re-measures the foods.
   are unrollable (`Rollable = false`, empty pack list) and reachable only
   this way. The stock does not survive a roll.
 
-**What is still capped, and why.** `SAP2_ROSTER_TIER = 2`: Tier 2 rolls,
-Tier 3 does not exist yet. The one hole behind that is Spider, whose faint
-summons a random *Tier 3* pet - it summons nothing here until Tier 3 lands.
-That is a deliberate trade, and the alternative was measured to be worse:
-with the roster capped at Tier 1 every turn-3-and-later shop drew from 10
+**What is still capped, and why.** `SAP2_ROSTER_TIER = 3` — this
+paragraph described the Tier-2 state and is kept for the reasoning, which
+still applies one tier up. Tier 2 shipped with exactly one hole, Spider's
+faint, because holding the whole tier back was measured to be worse: with
+the roster capped at Tier 1 every turn-3-and-later shop drew from 10
 species where the real game draws from 20, so the whole shop distribution
-was wrong by construction rather than one species' faint effect.
+was wrong by construction rather than one species' faint effect. Tier 3
+closed that hole and left nothing deferred inside a shipped tier; see
+"Tier 3 roster" below for what is behind the cap now.
 
 ## Episode shape
 
@@ -515,9 +518,9 @@ rather than the UI text:
 | Swan | StartTurn | +1/+2/+3 gold, on top of the turn's allowance |
 | Worm | StartTurn | stocks Apple / Apple2 / Apple3 at 2 gold, prepended after the roll |
 
-**Deferred, not silently wrong**: Spider's summon needs a Tier-3 roster
-to draw from. It is the one Tier-2 rule this env does not implement, and
-it lands with Tier 3. Holding the whole tier back instead would be worse:
+**Deferred, not silently wrong — and now landed**: Spider's summon needed
+a Tier-3 roster to draw from. It was the one Tier-2 rule this env did not
+implement, and Tier 3 closed it (see "Tier 3 roster"). Holding the whole tier back instead would be worse:
 capped at Tier 1, every turn-3-and-later shop is wrong by construction.
 
 Two claims from the first pass that the second corrected:
@@ -546,6 +549,113 @@ turn 1 and 120 at turn 3 with no divergence, 300/300 Tier-1 exact
 surviving line-ups, and Tier-2 exact survivors down from 86/200
 mismatching to 6/300 — the tail is under investigation and is recorded
 here rather than rounded off.
+
+## Tier 3 roster
+
+Same method as Tier 2, one level stricter: every row below was generated
+from `sap/spec.py`'s dump of the shipped build's own ability templates
+and then FIRED once with `sap/ability_check.py --pet X --levels`, and the
+rules a template cannot carry were each driven separately in
+`sap/tier3_drive.py` (named per row). Nothing here came from a scrape.
+The gate is `sap/audit_roster.py --tier 3`, which diffs the header
+against the build mechanically: zero WRONG and zero MISSING rows for
+tiers 1-3.
+
+**Roster**: Badger 6/3, Camel 3/3, Dodo 4/2, Dog 3/2, Dolphin 4/3,
+Elephant 3/7, Giraffe 1/2, Ox 1/3, Rabbit 1/2, Sheep 2/2, rollable from
+turn 3 alongside Tiers 1-2, plus **Birthday Cake, Garlic and Salad
+Bowl** at 3 gold each. The food pool matters as much as the pets: a
+tier-3 food roll draws 1/8, and a roster that omitted Birthday Cake
+would make every turn-3-and-later food roll wrong by construction.
+
+| Pet | Trigger | Effect (L1/L2/L3) |
+|---|---|---|
+| Badger | BeforeDeath | floor(own attack x 50/100/150%) damage to the nearest living body EACH way - and "each way" crosses the battle line |
+| Camel | Hurt | the nearest friend behind +1/+2, +2/+4, +3/+6 - fires even when the hurt was lethal |
+| Dodo | StartBattle | floor(own attack x 50/100/150%) ATTACK to the nearest friend ahead |
+| Dog | a friend was summoned | itself +2/+1, +4/+2, +6/+3, TEMPORARY |
+| Dolphin | StartBattle | 4 damage to the fewest-health living enemy, 1/2/3 times, re-picked per shot |
+| Elephant | after it attacks | 1 damage to the nearest friend behind, 1/2/3 times |
+| Giraffe | StartTurn | the nearest 1/2/3 friends ahead +1/+1 - the COUNT scales, not the amount |
+| Ox | the friend directly ahead fainted | itself the Melon perk and +1 attack, 1/2/3 times a turn |
+| Rabbit | a friendly pet ate | the EATER +1/+2/+3 health, three times a turn |
+| Sheep | Death | two Rams at 2/2, 4/4, 6/6, at its own level, into the cell it vacated |
+| Spider (Tier 2) | Death | one random rollable tier-3 pet at 2/2, 4/4, 6/6 - **the hole Tier 2 shipped with, now closed** |
+
+| Food | Effect |
+|---|---|
+| Birthday Cake | a perk worth +1 gold of sell value at EVERY end of turn, cumulative |
+| Garlic | a permanent perk: every incoming hit takes 2 less, floored at 2, never more than was coming |
+| Salad Bowl | +1/+1 to TWO RANDOM friends - played on the BOARD, not on a pet |
+
+**What the templates could not say, and what driving them showed.**
+
+- **Badger's "adjacent" is not a team-local rule.** Its targets node
+  carries no Team filter at all, and on the merged ten-cell battle grid
+  the cell in front of your own front IS the enemy's front. Driven four
+  ways: mid-line it hits two friends, at the front it hits the friend
+  behind AND the enemy front, alone it hits only the enemy front. A
+  fifth board, which only a Tier-3 differential run produced, sharpened
+  it further: with the enemy front mid-faint beside it the splash
+  reaches the body BEHIND that one, so the finder steps over a dying
+  body exactly like every other finder here.
+- **The percentage is floored, and it is the firer's own attack.** The
+  multiplier lives in the template as a `System.Decimal` inside a
+  `Calculator`, which the dump cannot read. Fired across odd attacks at
+  all three levels, Badger and Dodo agree on one expression: 7 attack
+  deals 3 at level 1 and 10 at level 3.
+- **A lethal hit does not cancel the hurt trigger.** This file used to
+  say "survival is the whole gate", which fit Peacock and nothing else.
+  A Camel taken to exactly 0 still buffs the friend behind it; a Peacock
+  taken to 0 gains nothing. The difference is that a mid-faint body is
+  not a legal TARGET and Peacock targets itself - one rule, not two.
+- **Rabbit's target is the EATER.** `TargetsTriggerTarget` names whoever
+  the food was played on, which is the Rabbit only when the food was
+  aimed at the Rabbit. And its cap of three is per TURN: the fourth and
+  fifth food play of a turn carry no bonus and the count resets at the
+  boundary.
+- **A granted PERK counts as a food played on a friendly.** Ox gaining
+  Melon wakes a Rabbit on the same team, which then adds its health to
+  the Ox. A plain buff does not - a Camel's and an Otter's woke nothing.
+- **Salad Bowl takes no aim.** A `PlaySpell` that names a target is
+  dropped by the resolver outright: no gold spent, the food not even
+  consumed. An Apple is the mirror image. sap2 therefore offers a
+  board-wide food on target 0 only, which stands for "played on the
+  board" rather than on the pet in slot 0.
+- **Melon blocks 20 once; Garlic takes 2 off forever.** 1, 5 and 20
+  damage all land as 0 through a Melon and the perk is gone afterwards
+  whatever the amount was. Garlic's floor is 2, not 1: 3 damage lands as
+  2, and 2 damage lands as 2.
+- **Two summons onto one cell push, and which way is measured.** Sheep's
+  Rams both aim at the cell it vacated; the run behind them slides one
+  further back when there is room, and when there is not, the run in
+  FRONT slides one further forward instead. Six shop layouts pin it, and
+  the battle line now uses the same rule - the previous "no room behind"
+  fallback was marked unmeasured in the code and was wrong.
+
+**Three rules landed that Tier 3 did not introduce but exposed.** Each
+was reachable before and simply never driven, and each is now measured:
+damage eats the TEMPORARY health before the permanent half (a Muffin'd
+pet at perm 1 / temp 3 takes a 2-damage splash as perm 1 / temp 1); a
+Pilled pet is mid-faint for the whole of its own faint, so its own
+splash cannot pick it as a target; and Dolphin's lowest-health finder
+breaks a TIE at random rather than by position (28/32 over 60 seeds).
+
+**What is still capped.** `SAP2_ROSTER_TIER = 3`. Behind it is only
+tiers 4-6, which are not written: a turn-7 shop draws from 30 species
+where the real game draws from 40. Nothing inside a shipped tier is
+deferred any more - Tier 2's one hole, Spider's summon, closed here.
+Two Tier-3 pets reach forward out of the roster and are complete anyway:
+Ox grants the Melon perk, whose food form is Tier 6, and Sheep's Ram
+token belongs to no tier at all.
+
+**Verified**: 84 env tests; `audit_roster.py --tier 3` with zero WRONG
+and zero MISSING rows for tiers 1-3; 26/26 scripted shop checks; 200
+fuzz episodes at turn 1 and 120 at turn 5 with no divergence;
+`difftest_match.py` with no divergence; and 300/300 exact surviving
+line-ups at Tier 1, Tier 2 and Tier 3, 300/300 deterministic boards and
+200/200 holed boards at Tier 3 - `difftest.py` grew a `--tier3` flag and
+its species map grew the ten new pets for exactly this.
 
 ## Pack scope: Turtle only, and the ladder is not
 
@@ -605,27 +715,29 @@ by `ChangePackRequest`), so the sampling lives entirely server-side.
    own battle-phase ability is an explicit deferred no-op,
    not shipped wrong. Introduced `Attack`, `Hurt`, `StartTurn` and
    `EndTurn`-conditional, none of which `sap-v1`'s taxonomy had.
-3. **Tier 3** — roster confirmed via `policy-clash-re-tools` directly
-   (`roster.py`'s dump, same method as Tier 2, not `data/turtle_pack`'s
-   wiki scrape): Dodo, Badger, Dolphin, Giraffe, Elephant, Camel, Rabbit,
-   Ox, Dog, Sheep + Birthday Cake, Salad Bowl, Garlic. **This build's
+3. **Tier 3 — done**, see "Tier 3 roster" above. Badger, Camel, Dodo,
+   Dog, Dolphin, Elephant, Giraffe, Ox, Rabbit, Sheep + Birthday Cake,
+   Garlic and Salad Bowl, and Spider's summon with them. **This build's
    Turtle Pack Tier 3 DOES include Birthday Cake** - contradicting this
-   doc's own earlier note (below, now wrong and left crossed out rather
-   than silently deleted) that it was scraped as absent; that scrape was
-   evidently stale or wiki-sourced rather than measured. ~~Cake is
-   confirmed not currently in Turtle Pack per `data/turtle_pack`'s own
-   scrape notes — Salad Bowl and Garlic only.~~ Not started: needs a
-   general recursive "damage arbitrary positions, resolve what that
-   kills" primitive of its own (Badger's Faint ability hits BOTH the
-   friend behind it and whatever is currently on the opposing front line,
-   for 50/100/150% of Badger's own attack - the same class of problem
-   Hedgehog's Faint damage was, and `sap2_battle_resolve_pending_faints`
-   should cover it, but this has not been tried). Introduces
-   `FriendAheadFaints`/`FriendAheadAttacks`-style positional triggers
-   (Camel, Giraffe, Ox) not in `sap-v1`'s taxonomy at all yet, and at
-   least one perk beyond Honey/Meat Bone (Garlic's, and Birthday Cake's -
-   neither one's actual mechanic has been looked up yet, only that both
-   are `EffectGivePerk`).
+   doc's own earlier note (now wrong, left crossed out rather than
+   silently deleted) that it was scraped as absent; that scrape was
+   stale or wiki-sourced rather than measured, and the food pool is
+   1/8 at tier 3, so omitting it would have made every tier-3 food roll
+   wrong. ~~Cake is confirmed not currently in Turtle Pack per
+   `data/turtle_pack`'s own scrape notes — Salad Bowl and Garlic only.~~
+   Introduced `AfterAttack` (Elephant), `FriendAheadFainted` (Ox) and
+   `EatFood` (Rabbit) as triggers, cross-team adjacency
+   (`ADJACENT_ANY_TEAM`, Badger) and an ordered enemy finder
+   (`LOWEST_HEALTH_ENEMY`, Dolphin) as selectors, and three perks
+   beyond Honey/Meat Bone: Garlic, Melon (which Ox grants a tier early)
+   and Birthday Cake. The earlier guess in this appendix that Badger
+   would need a new "damage arbitrary positions" primitive was wrong in
+   an interesting way - the faint cascade `main` already carries did the
+   whole job, and what Badger actually needed was for "adjacent" to be
+   read off the merged grid rather than off one team's line.
+   `EatFood` is named for the build's `FoodEatenByFriendly`; Seal's
+   tier-5 `FoodEatenByThis` is a DIFFERENT enum on the same trigger
+   class and needs its own id when that tier lands.
 4. **Tier 4** (Skunk, Hippo, Bison, Blowfish, Turtle, Squirrel, Penguin,
    Deer, Whale, Parrot + Pear, Canned Food, Bread): introduces `KnockOut`
    (Hippo) and permanent shop-wide buffs (Canned Food).
@@ -634,8 +746,8 @@ by `ChangePackRequest`), so the sampling lives entirely server-side.
    `FriendFainted` (Shark) and Chocolate's direct-XP-no-merge leveling.
 6. **Tier 6** (Leopard, Boar, Tiger, Wolverine, Gorilla, Dragon, Mammoth,
    Cat, Snake, Fly + Pizza, Mushroom, Melon, Steak): introduces
-   `BeforeAttack`/`AfterAttack` (Boar, Elephant already tier 3 — Boar is
-   the tier-6 case) and `Fly`'s bounded-trigger-count ability.
+   `BeforeAttack` (Boar; `AfterAttack` already landed with Tier 3's
+   Elephant) and `Fly`'s bounded-trigger-count ability.
 
 Each phase: generate the tier's rows from `sap/spec.py`'s dump of the
 shipped build's own ability templates (not from a wiki or a scrape),

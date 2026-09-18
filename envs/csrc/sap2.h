@@ -8,12 +8,13 @@
  * Rather than one shop phase + one battle, this is the actual Arena
  * match: many rounds of shop-then-battle, team state persisting round to
  * round, lives and trophies, a tier-gated shop that grows with the turn
- * number, and freeze. Roster is still Tier 1 only (10 pets, 2 foods) -
- * the match *engine* is the full game; the roster is a separate, later
- * expansion (sap-v2.md's appendix), and shipping both unverified at once
- * risks exactly the kind of bug a smaller, single-round build of this
- * same engine caught repeatedly during development, at a sixth of this
- * scope - see sap-v2.md for that history.
+ * number, and freeze. Roster reaches TIER 3 (30 pets, 8 rollable foods) -
+ * the match *engine* is the full game; the roster is a separate,
+ * tier-at-a-time expansion (sap-v2.md's appendix), because shipping the
+ * whole roster unverified at once risks exactly the kind of bug a
+ * smaller, single-round build of this same engine caught repeatedly
+ * during development, at a sixth of this scope - see sap-v2.md for that
+ * history. Tiers 4-6 are the remaining work.
  *
  * Self-contained: its own species/food tables, its own RNG, its own
  * battle resolution - not built on top of another file, so it can be
@@ -105,12 +106,17 @@ enum {
     SAP2_CRAB = 11, SAP2_FLAMINGO = 12, SAP2_HEDGEHOG = 13, SAP2_KANGAROO = 14,
     SAP2_PEACOCK = 15, SAP2_RAT = 16, SAP2_SNAIL = 17, SAP2_SPIDER = 18,
     SAP2_SWAN = 19, SAP2_WORM = 20,
-    SAP2_NUM_SHOP_SPECIES = 20,
+    /* Tier 3 */
+    SAP2_BADGER = 21, SAP2_CAMEL = 22, SAP2_DODO = 23, SAP2_DOG = 24,
+    SAP2_DOLPHIN = 25, SAP2_ELEPHANT = 26, SAP2_GIRAFFE = 27, SAP2_OX = 28,
+    SAP2_RABBIT = 29, SAP2_SHEEP = 30,
+    SAP2_NUM_SHOP_SPECIES = 30,
     /* Summoned tokens - never in a shop */
-    SAP2_CRICKET_TOKEN = 21,
-    SAP2_BEE = 22,
-    SAP2_DIRTY_RAT = 23,
-    SAP2_NUM_ALL_SPECIES = 24
+    SAP2_CRICKET_TOKEN = 31,
+    SAP2_BEE = 32,
+    SAP2_DIRTY_RAT = 33,
+    SAP2_RAM = 34,          /* Sheep's faint summon - see its ability row */
+    SAP2_NUM_ALL_SPECIES = 35
 };
 
 /* Which tier a species belongs to. The roll pool is the UNION of every
@@ -123,7 +129,8 @@ static const uint8_t SAP2_SPECIES_TIER[SAP2_NUM_ALL_SPECIES] = {
     0,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    0, 0, 0
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    0, 0, 0, 0
 };
 
 enum {
@@ -137,26 +144,41 @@ enum {
      * consecutive because Worm's row steps through them by level. */
     SAP2_BREAD_CRUMBS = 6,
     SAP2_APPLE2 = 7, SAP2_APPLE3 = 8,
-    SAP2_NUM_FOODS = 9
+    /* Tier 3 */
+    SAP2_BIRTHDAY_CAKE = 9, SAP2_GARLIC = 10, SAP2_SALAD_BOWL = 11,
+    SAP2_NUM_FOODS = 12
 };
 /* Prices: every Pack1 food is 3 gold except Pill, which is 1 - measured
  * from Spell.Price and cross-checked against BoardUtility.GetItemPrice per
  * tier. Bread Crumbs is Pigeon's free stock, price 0. */
-static const int SAP2_FOOD_COST[SAP2_NUM_FOODS] = {0, 3, 3, 3, 3, 1, 0, 3, 3};
-static const uint8_t SAP2_FOOD_TIER[SAP2_NUM_FOODS] = {0, 1, 1, 2, 2, 2, 0, 0, 0};
+static const int SAP2_FOOD_COST[SAP2_NUM_FOODS] = {0, 3, 3, 3, 3, 1, 0, 3, 3, 3, 3, 3};
+static const uint8_t SAP2_FOOD_TIER[SAP2_NUM_FOODS] = {0, 1, 1, 2, 2, 2, 0, 0, 0, 3, 3, 3};
 /* What an Apple of each grade is worth: +1/+1, +2/+2, +3/+3, permanent -
  * measured, the three templates differ only in that flat amount. */
-static const int8_t SAP2_APPLE_BUFF[SAP2_NUM_FOODS] = {0, 1, 0, 0, 0, 0, 0, 2, 3};
+static const int8_t SAP2_APPLE_BUFF[SAP2_NUM_FOODS] = {0, 1, 0, 0, 0, 0, 0, 2, 3, 0, 0, 0};
+
+/* A food the shipped build plays on the BOARD rather than on a pet.
+ * Measured (sap/tier3_drive.py `salad_bowl`): a `BoardEvents.PlaySpell`
+ * naming a Salad Bowl AND a target minion is dropped by the resolver
+ * without a single event - no gold spent, the food not even consumed -
+ * while the same event with a null target buffs two friends. An Apple is
+ * the mirror image: aimed it lands, unaimed it is paid for and wasted.
+ * So "which pet" is not a property of the play for these, and
+ * sap2_legal_for offers exactly one encoding of it - see there. */
+static inline int sap2_food_is_board_wide(uint8_t food) {
+    return food == SAP2_SALAD_BOWL;
+}
 
 /* Perks - what a food leaves ON a pet, as opposed to the stat change it
  * applies once and forgets.
  *
  * Measured via sap/perk_probe.py: NO Pack1 perk carries a durability at
  * all - all nine have PerkTemplate.Durability = null - so the id is the
- * whole of the perk here and a charge counter would be fiction. (Melon's
- * one-shot shield is a `Shield` perk the combat pipeline removes on first
- * absorb, and Melon is Tier 6, not Tier 3. The perks that do carry a
- * durability - Lemon, Strawberry, Potato, White Okra - are all Pack2/3/4.)
+ * whole of the perk here and a charge counter would be fiction. (The
+ * perks that do carry a durability - Lemon, Strawberry, Potato, White
+ * Okra - are all Pack2/3/4.) Melon's one-shot shield is not a durability
+ * either: the combat pipeline removes the whole perk the first time the
+ * pet takes damage - see sap2_absorb.
  *
  * Also measured: the slot is strictly single-valued. A second food
  * replaces the first unconditionally (PerkLost then PerkGained, in that
@@ -166,20 +188,27 @@ enum {
     SAP2_PERK_NONE = 0,
     SAP2_PERK_HONEY = 1,
     SAP2_PERK_MEAT_BONE = 2,
-    SAP2_NUM_PERKS = 3
+    /* Tier 3. Melon is the Tier 6 FOOD, but Ox grants the perk at Tier 3,
+     * so the perk arrives one tier ahead of the food that also grants it. */
+    SAP2_PERK_GARLIC = 3,
+    SAP2_PERK_MELON = 4,
+    SAP2_PERK_BIRTHDAY_CAKE = 5,
+    SAP2_NUM_PERKS = 6
 };
 
 static const int8_t SAP2_BASE_ATK[SAP2_NUM_ALL_SPECIES] = {
     0,
     2, 3, 1, 2, 2, 2, 2, 1, 4, 3,
     4, 3, 4, 2, 2, 3, 2, 2, 1, 1,
-    0, 1, 1
+    6, 3, 4, 3, 4, 3, 1, 1, 1, 2,
+    0, 1, 1, 2
 };
 static const int8_t SAP2_BASE_HP[SAP2_NUM_ALL_SPECIES] = {
     0,
     2, 2, 3, 2, 3, 1, 2, 4, 1, 2,
     1, 2, 2, 2, 5, 6, 3, 2, 2, 4,
-    0, 1, 1
+    3, 3, 2, 2, 3, 7, 2, 3, 2, 2,
+    0, 1, 1, 2
 };
 
 /* Experience and levels. Measured from the shipped build via
@@ -217,17 +246,20 @@ static inline uint8_t sap2_level_for_exp(uint8_t exp) {
  * SAP2_ROSTER_TIER caps which species may actually roll, independently of
  * the shop's own tier - it is how far the implemented roster reaches.
  *
- * It is 2, with one known hole behind it: Spider's faint summons a random
- * TIER 3 pet, and that roster does not exist here yet, so a Spider that
- * faints in battle summons nothing. Holding the whole tier back instead
- * would be worse, not better: capped at 1, EVERY turn-3-and-later shop is
- * wrong by construction - the real game draws from 20 species and this
- * would draw from 10 - whereas at 2 the only divergence is one species'
- * faint effect. Tier 3 closes it. */
+ * It is 3. The cap is no longer hiding a hole INSIDE a shipped tier:
+ * Spider's faint summons a random tier-3 pet, and that roster now
+ * exists, so the one divergence Tier 2 shipped with is closed (see
+ * Spider's ability row). What is left behind the cap is simply tiers
+ * 4-6, which are not written yet; a turn-7-and-later shop therefore
+ * draws from 30 species where the real game draws from 40, and raising
+ * this number without writing those rows would roll pets with no
+ * abilities at all. Two tier-3 pets reach FORWARD out of the roster and
+ * are complete anyway: Ox grants the Melon perk, whose food form is
+ * Tier 6, and Sheep's Ram token belongs to no tier at all. */
 static const int SAP2_TIER_ON_TURN[] = {3, 5, 7, 9, 11};
 static const int SAP2_PET_CAPACITY_ON_TIER[] = {3, 5};
 static const int SAP2_FOOD_CAPACITY_ON_TIER[] = {3};
-#define SAP2_ROSTER_TIER 2
+#define SAP2_ROSTER_TIER 3
 
 static inline int sap2_tier_for_turn(int turn) {
     int tier = 1;
@@ -299,10 +331,28 @@ enum {
  * same observation here. The perk is a one-hot rather than a honey
  * flag, so a second perk widens a block instead of adding a field. The
  * attack/health cells are the TOTALS the card shows - permanent plus
- * any live temporary buff, see sap2_pet_attack. */
+ * any live temporary buff, see sap2_pet_attack.
+ *
+ * Tier 3 adds two more per-pet numbers for the same reason the exp
+ * counter is here - each is drawn on the card and each decides a payoff:
+ *
+ *   sell bonus         what a Birthday Cake has added to this pet's sale
+ *                      price so far. The card shows its sell value, and
+ *                      the cake adds one gold to it at EVERY end of turn
+ *                      (measured, sap/tier3_drive.py `birthday_cake_perk`:
+ *                      a caked Ant sold for 1, then 2, then 3, then 4
+ *                      over three turn boundaries), so the perk one-hot
+ *                      alone cannot say what the pet is worth.
+ *   uses this turn     how many times a per-turn-capped ability has
+ *                      already fired. Rabbit's caps at three food plays
+ *                      per turn and resets at the boundary (measured,
+ *                      `rabbit_limit`), so whether the next Apple carries
+ *                      its bonus is state the agent would otherwise have
+ *                      to count for itself. */
 enum {
     SAP2_TEAM_SLOT_FLOATS = SAP2_NUM_ALL_SPECIES + 1 /* atk */ + 1 /* hp */ + SAP2_MAX_LEVEL
-                            + 1 /* exp */ + SAP2_NUM_PERKS,
+                            + 1 /* exp */ + SAP2_NUM_PERKS
+                            + 1 /* sell bonus */ + 1 /* uses this turn */,
     SAP2_SHOP_PET_SLOT_FLOATS = (SAP2_NUM_SHOP_SPECIES + 1) + 1 /* hp bonus */ + 1 /* frozen */,
     SAP2_SHOP_FOOD_SLOT_FLOATS = SAP2_NUM_FOODS + 1 /* frozen */ + 1 /* price */,
     SAP2_OBS_FLOATS = 1 /* gold */ + 1 /* lives */ + 1 /* trophies */ + 1 /* turn */
@@ -330,17 +380,24 @@ enum {
  *
  * attack/health are the PERMANENT stats; temp_attack/temp_health carry
  * the part that expires at the start of the next turn. Measured from
- * the shipped build via policy-clash-re-tools, Horse is the only pet in
- * this roster whose effect is temporary - its ability carries
- * Duration = Temp(1), while Ant, Otter, Beaver, Duck and Fish all carry
- * Duration = Perm(0) - and Horse buffs attack only, so nothing here
- * writes temp_health yet; the two components are kept symmetric because
- * expiry and reading treat them identically.
+ * the shipped build via policy-clash-re-tools, Horse and Dog are the
+ * pets in this roster whose effect is temporary - their abilities carry
+ * Duration = Temp(1), while Ant, Otter, Beaver, Duck, Fish, Camel,
+ * Dodo and Giraffe all carry Duration = Perm(0) - and Dog is also the
+ * first to write temp_health (+2/+1, +4/+2, +6/+3 by level); the two
+ * components were always kept symmetric because expiry and reading
+ * treat them identically.
  *
  * Nothing outside reads the components: every reader goes through
  * sap2_pet_attack/sap2_pet_health. Keeping the components unclamped
  * against each other is the point - the permanent stats stay whatever
- * they earned, so an expiring buff can never leave a pet below them. */
+ * they earned, so an expiring buff can never leave a pet below them.
+ *
+ * sell_bonus is gold added to this pet's sale price on top of its level
+ * - Birthday Cake's perk, which adds one at every end of turn and keeps
+ * it. uses is how many times a per-turn-capped ability has fired this
+ * turn (Rabbit's three, Ox's level-many); both are cleared by the round
+ * advance, which is where the turn boundary lives. */
 typedef struct {
     uint8_t species;
     int8_t attack;
@@ -350,6 +407,8 @@ typedef struct {
     uint8_t level;
     uint8_t xp;
     uint8_t perk;
+    uint8_t sell_bonus;
+    uint8_t uses;
 } SapPet2;
 
 /* What "attack"/"health" mean everywhere else: the two components
@@ -606,10 +665,15 @@ static inline int sap2_leftmost_empty(const SapSeat2 *s) {
     return -1;
 }
 
+/* Every LIVING team slot other than `exclude`. Mid-faint bodies (health
+ * <= 0, still standing while the damage that dropped them resolves) are
+ * left out: they are not legal targets and they do not satisfy a
+ * has-a-minion condition either - see sap2_seat_targetable. */
 static inline int sap2_friends(const SapSeat2 *s, int exclude, int *out) {
     int n = 0;
     for (int i = 0; i < SAP2_TEAM; i++) {
-        if (i != exclude && s->team[i].species != SAP2_SPECIES_EMPTY) {
+        if (i != exclude && s->team[i].species != SAP2_SPECIES_EMPTY
+            && (int)s->team[i].health + (int)s->team[i].temp_health > 0) {
             out[n++] = i;
         }
     }
@@ -674,9 +738,31 @@ enum {
     SAP2_TRIG_START_BATTLE,   /* queued once, before the first exchange */
     SAP2_TRIG_BEFORE_DEATH,   /* fainting, body still on the board */
     SAP2_TRIG_DEATH,          /* fainted, body gone - a summon takes the slot */
-    SAP2_TRIG_HURT,           /* took damage and lived (Peacock) */
+    SAP2_TRIG_HURT,           /* took damage (Peacock, Camel) - see
+                               * sap2_battle_damage for why "and lived" is
+                               * not the gate it was once written as */
     SAP2_TRIG_FRIEND_AHEAD_ATTACKED, /* the friend one ahead attacked (Kangaroo) */
-    SAP2_TRIG_KILL            /* this pet's attack fainted its target */
+    SAP2_TRIG_KILL,           /* this pet's attack fainted its target */
+    SAP2_TRIG_AFTER_ATTACK,   /* THIS pet attacked - the build's
+                               * TriggerAttack/ThisAttacked (Elephant).
+                               * Distinct from FRIEND_AHEAD_ATTACKED,
+                               * which is the same Trigger CLASS with
+                               * Enum=FriendAheadAttacked. */
+    SAP2_TRIG_FRIEND_AHEAD_FAINTED, /* the friend in the cell directly
+                                     * ahead is fainting - the build's
+                                     * TriggerBeforeDeath/FriendAheadDied
+                                     * (Ox), so it fires in the same
+                                     * window as that pet's own
+                                     * before-death effect */
+    SAP2_TRIG_EAT_FOOD        /* a FRIENDLY pet, this one included, was
+                               * fed a food: the build's
+                               * TriggerPlayedSpellOn/FoodEatenByFriendly
+                               * (Rabbit). Deliberately NOT named for
+                               * "this pet ate": Seal's Tier-5 ability is
+                               * TriggerPlayedSpellOn/FoodEatenByThis,
+                               * a different Enum on the same class, and
+                               * it needs its own id (SAP2_TRIG_EAT_FOOD_SELF)
+                               * when that tier lands. */
 };
 
 enum {
@@ -686,12 +772,21 @@ enum {
     SAP2_SEL_RANDOM_ENEMY,    /* battle only */
     SAP2_SEL_ALL_MINIONS,     /* every pet on BOTH sides except self - Hedgehog */
     SAP2_SEL_FRIENDS_AHEAD,   /* the `count` nearest friends ahead - Snail */
-    SAP2_SEL_FRIENDS_BEHIND,  /* the `count` nearest friends behind - Flamingo */
-    SAP2_SEL_TRIGGER_TARGET,  /* the pet the trigger was about (Horse) */
+    SAP2_SEL_FRIENDS_BEHIND,  /* the `count` nearest friends behind -
+                               * Flamingo; with SAP2_EFF_DAMAGE it is the
+                               * nearest ONE, hit `count` times - Elephant */
+    SAP2_SEL_TRIGGER_TARGET,  /* the pet the trigger was about (Horse,
+                               * Rabbit - for Rabbit that is the EATER,
+                               * which may or may not be the Rabbit) */
     SAP2_SEL_SHOP_PETS,       /* every occupied shop pet slot */
     SAP2_SEL_SHOP_FOOD,       /* the food shop, as a list to prepend to */
     SAP2_SEL_SUMMON_SLOT,     /* the position the fainting body just left */
-    SAP2_SEL_OPPONENT_FRONT   /* up front on the OTHER side - Rat */
+    SAP2_SEL_OPPONENT_FRONT,  /* up front on the OTHER side - Rat */
+    SAP2_SEL_ADJACENT_ANY_TEAM, /* the bodies in the two grid cells either
+                                 * side of this one, which on the merged
+                                 * battle grid CROSSES the line - Badger */
+    SAP2_SEL_LOWEST_HEALTH_ENEMY /* the fewest-health living enemy,
+                                  * re-picked per shot - Dolphin */
 };
 
 enum {
@@ -702,7 +797,9 @@ enum {
     SAP2_EFF_ADD_SHOP_SPELL,  /* prepend `count` copies of `param` at `price` */
     SAP2_EFF_DAMAGE,
     SAP2_EFF_SUMMON,
-    SAP2_EFF_COPY_STATS       /* a percentage of the best friend's stat - Crab */
+    SAP2_EFF_COPY_STATS,      /* a percentage of the best friend's stat - Crab */
+    SAP2_EFF_ADD_SELL_VALUE   /* gold onto the target's sale price -
+                               * Birthday Cake's perk */
 };
 
 /* Conditions gate the whole ability: measured (sap/ability_check.py), a
@@ -733,12 +830,19 @@ typedef struct {
     int8_t count;    /* how many targets, or how many copies to summon */
     int8_t attack;   /* amount, or SAP2_BY_LEVEL* */
     int8_t health;
-    int8_t percent;  /* per level, for SAP2_EFF_COPY_STATS */
+    int8_t percent;  /* per level: SAP2_EFF_COPY_STATS reads a friend's
+                      * stat, SAP2_EFF_DAMAGE and SAP2_EFF_BUFF read the
+                      * FIRING pet's own attack - Badger, Dodo */
     uint8_t param;   /* species / food id, effect-dependent */
     int8_t param_step; /* param += (level-1)*step - Worm's Apple grade */
     int8_t price;    /* what a stocked food costs */
     uint8_t level;   /* a summon's level, when it is not the summoner's */
     uint8_t duration;
+    uint8_t summon_tier;  /* summon a random ROLLABLE pet of this tier
+                           * instead of `param` - Spider */
+    uint8_t grant_perk;   /* a perk the effect leaves on the target - Ox */
+    int8_t max_per_turn;  /* activations allowed per turn, or 0 for no
+                           * cap - Rabbit's three, Ox's level-many */
 } Sap2Ability;
 
 static const Sap2Ability SAP2_ABILITY[SAP2_NUM_ALL_SPECIES][SAP2_MAX_ABILITIES] = {
@@ -788,30 +892,167 @@ static const Sap2Ability SAP2_ABILITY[SAP2_NUM_ALL_SPECIES][SAP2_MAX_ABILITIES] 
     /* SNAIL    */ {{.trigger = SAP2_TRIG_END_TURN, .selector = SAP2_SEL_FRIENDS_AHEAD,
                      .effect = SAP2_EFF_BUFF, .condition = SAP2_COND_PREV_ROUND_LOST,
                      .count = 3, .attack = SAP2_BY_LEVEL}, {0}},
-    /* SPIDER   */ {{0}, {0}}, /* summons a random TIER 3 pet - see the roster note */
+    /* SPIDER   */ {{.trigger = SAP2_TRIG_DEATH, .selector = SAP2_SEL_SUMMON_SLOT,
+                     /* A random ROLLABLE tier-3 pet at 2/2, 4/4, 6/6 by
+                      * level, itself at the Spider's level - measured
+                      * (sap/tier3_drive.py `spider_summon`): 200 drives
+                      * per level land exactly the ten tier-3 rollables,
+                      * 19-21 apiece, at those stats and that level, and
+                      * the body takes the cell the Spider vacated
+                      * (`spider_cell`). The build's catalogue is a
+                      * MinionCatalogueFind(WithTier=3, WithRollable) with
+                      * no species list and no stats at all, so `param`
+                      * cannot name the body - summon_tier does. */
+                     .effect = SAP2_EFF_SUMMON, .count = 1,
+                     .attack = SAP2_BY_LEVEL_X2, .health = SAP2_BY_LEVEL_X2,
+                     .summon_tier = 3}, {0}},
     /* SWAN     */ {{.trigger = SAP2_TRIG_START_TURN, .selector = SAP2_SEL_SELF,
                      .effect = SAP2_EFF_GAIN_GOLD, .count = 1, .attack = SAP2_BY_LEVEL}, {0}},
     /* WORM     */ {{.trigger = SAP2_TRIG_START_TURN, .selector = SAP2_SEL_SHOP_FOOD,
                      .effect = SAP2_EFF_ADD_SHOP_SPELL, .count = 1,
                      .param = SAP2_APPLE, .param_step = SAP2_APPLE2 - SAP2_APPLE,
                      .price = 2}, {0}},
+    /* Tier 3. Every amount below was read off a fired ability
+     * (sap/ability_check.py --pet X --levels); the rules the templates do
+     * not carry - a percent-of-attack multiplier held as a System.Decimal,
+     * an ordered finder, an activation limit's scope, which cell a second
+     * summon takes - were driven separately in sap/tier3_drive.py, named
+     * per row. */
+    /* BADGER   */ {{.trigger = SAP2_TRIG_BEFORE_DEATH,
+                     .selector = SAP2_SEL_ADJACENT_ANY_TEAM,
+                     /* 50/100/150% of its OWN attack at faint, FLOORED,
+                      * to both neighbouring cells - and "adjacent" really
+                      * does cross the battle line: measured
+                      * (`badger_cross_team`), a Badger at the fighting
+                      * front with a friend behind it splashed the friend
+                      * AND the enemy front, and alone it hit only the
+                      * enemy front. The rounding is
+                      * `badger_percent`: 7 attack at L1 deals 3, at L3
+                      * deals 10 - floor(attack * 50 * level / 100). */
+                     .effect = SAP2_EFF_DAMAGE, .percent = 50}, {0}},
+    /* CAMEL    */ {{.trigger = SAP2_TRIG_HURT, .selector = SAP2_SEL_FRIENDS_BEHIND,
+                     /* +1/+2, +2/+4, +3/+6 permanent onto the nearest
+                      * friend behind. It fires even when the damage was
+                      * LETHAL - measured (`camel_no_friend`): a Camel
+                      * taken to 0 still buffed, where a Peacock taken to
+                      * 0 gained nothing. The difference is not the
+                      * trigger, it is that a mid-faint body is not a
+                      * legal TARGET and Peacock targets itself. */
+                     .effect = SAP2_EFF_BUFF, .count = 1,
+                     .attack = SAP2_BY_LEVEL, .health = SAP2_BY_LEVEL_X2}, {0}},
+    /* DODO     */ {{.trigger = SAP2_TRIG_START_BATTLE, .selector = SAP2_SEL_FRIENDS_AHEAD,
+                     /* 50/100/150% of its own attack, FLOORED, onto the
+                      * nearest friend ahead - attack only, permanent.
+                      * Same multiplier and same rounding as Badger,
+                      * measured the same way (`dodo_percent`): 1 attack
+                      * at L1 buffs nothing at all, 9 at L3 buffs +13. */
+                     .effect = SAP2_EFF_BUFF, .count = 1, .percent = 50}, {0}},
+    /* DOG      */ {{.trigger = SAP2_TRIG_SUMMON, .selector = SAP2_SEL_SELF,
+                     /* +2/+1, +4/+2, +6/+3 TEMPORARY on itself whenever a
+                      * friend is summoned. Measured: the buff lands in
+                      * the temporary halves, so it expires at the next
+                      * start of turn exactly like Horse's. A Dirty Rat
+                      * arriving on this side does NOT wake it
+                      * (`dog_any_summon`) - that summon carries the
+                      * build's TriggerDisabled, same as for Horse. */
+                     .effect = SAP2_EFF_BUFF, .count = 1,
+                     .attack = SAP2_BY_LEVEL_X2, .health = SAP2_BY_LEVEL,
+                     .duration = SAP2_DUR_TEMP}, {0}},
+    /* DOLPHIN  */ {{.trigger = SAP2_TRIG_START_BATTLE,
+                     .selector = SAP2_SEL_LOWEST_HEALTH_ENEMY,
+                     /* 4 damage, level-many times, each shot re-picking
+                      * the fewest-health LIVING enemy. Measured
+                      * (`dolphin`): a level-3 Dolphin against enemies of
+                      * 30, 6 and 20 health spent two shots on the
+                      * 6-health one and the third on the 20-health one -
+                      * so the pick is re-made per shot and a body already
+                      * at <=0 is no longer a candidate. The faints
+                      * resolve after the last shot, not between them. */
+                     .effect = SAP2_EFF_DAMAGE, .count = SAP2_BY_LEVEL, .attack = 4}, {0}},
+    /* ELEPHANT */ {{.trigger = SAP2_TRIG_AFTER_ATTACK, .selector = SAP2_SEL_FRIENDS_BEHIND,
+                     /* 1 damage to the nearest friend behind, level-many
+                      * times, after every attack it makes. Measured
+                      * (`elephant_no_target`): a 1/2 Cricket behind a
+                      * level-3 Elephant takes 1 and 1 and the third shot
+                      * lands on nothing - the Cricket is mid-faint by
+                      * then and its token, which arrives only once the
+                      * cascade runs, is not hit. It fires even when the
+                      * Elephant dies in that same exchange. */
+                     .effect = SAP2_EFF_DAMAGE, .count = SAP2_BY_LEVEL, .attack = 1}, {0}},
+    /* GIRAFFE  */ {{.trigger = SAP2_TRIG_START_TURN, .selector = SAP2_SEL_FRIENDS_AHEAD,
+                     /* +1/+1 permanent to the nearest LEVEL-many friends
+                      * ahead - the amount is flat and the COUNT is what
+                      * scales, which is the opposite of most rows here. */
+                     .effect = SAP2_EFF_BUFF, .count = SAP2_BY_LEVEL,
+                     .attack = 1, .health = 1}, {0}},
+    /* OX       */ {{.trigger = SAP2_TRIG_FRIEND_AHEAD_FAINTED, .selector = SAP2_SEL_SELF,
+                     /* Melon perk plus a flat +1 attack, LEVEL-many times
+                      * per turn. Measured (`ox_friend_ahead`, `ox_limit`):
+                      * only the friend in the cell DIRECTLY ahead counts -
+                      * with two friends ahead dying in one blast it fired
+                      * once, because the nearer body was still standing
+                      * mid-faint when the further one went - and a level-1
+                      * Ox stops after one, a level-2 after two, a level-3
+                      * after three. It fires in the build phase too, on a
+                      * Pilled friend directly ahead. */
+                     .effect = SAP2_EFF_BUFF, .count = 1, .attack = 1,
+                     .grant_perk = SAP2_PERK_MELON,
+                     .max_per_turn = SAP2_BY_LEVEL}, {0}},
+    /* RABBIT   */ {{.trigger = SAP2_TRIG_EAT_FOOD, .selector = SAP2_SEL_TRIGGER_TARGET,
+                     /* +1/+2/+3 health onto whoever just ate - the EATER,
+                      * which is only the Rabbit itself when the food was
+                      * aimed at the Rabbit. Measured
+                      * (`rabbit_other_eater`): an Apple onto a different
+                      * friend gave that friend the Apple's +1/+1 and the
+                      * Rabbit's extra health on top. Three plays per turn
+                      * (`rabbit_limit`): the fourth and fifth Apple of a
+                      * turn carry no bonus, and the count resets at the
+                      * turn boundary. */
+                     .effect = SAP2_EFF_BUFF, .count = 1, .health = SAP2_BY_LEVEL,
+                     .max_per_turn = 3}, {0}},
+    /* SHEEP    */ {{.trigger = SAP2_TRIG_DEATH, .selector = SAP2_SEL_SUMMON_SLOT,
+                     /* TWO Rams at 2/2, 4/4, 6/6 by level, at the Sheep's
+                      * own level. Both aim at the cell the Sheep vacated
+                      * and the second pushes the first - measured
+                      * (`sheep_cells`), and it is the first thing in this
+                      * roster that pins which way a blocked push goes:
+                      * see sap2_battle_insert. On a full line only one
+                      * Ram lands. */
+                     .effect = SAP2_EFF_SUMMON, .count = 2,
+                     .attack = SAP2_BY_LEVEL_X2, .health = SAP2_BY_LEVEL_X2,
+                     .param = SAP2_RAM}, {0}},
     /* C.TOKEN  */ {{0}, {0}},
     /* BEE      */ {{0}, {0}},
-    /* DIRTYRAT */ {{0}, {0}}
+    /* DIRTYRAT */ {{0}, {0}},
+    /* RAM      */ {{0}, {0}}
 };
 
-/* Perks carry abilities too, on the pet rather than the species. Honey's
- * Bee is the only one that is a declarative ability: measured via
- * sap/perk_probe.py, Meat Bone / Garlic / Melon / Steak / Chili have an
- * empty Pairs list and no Trigger at all - their behaviour is hard-coded
- * in the shipped build's combat pipeline, so they hook in where that
- * pipeline lives here rather than as a row. */
+/* Perks carry abilities too, on the pet rather than the species. Two of
+ * them are declarative: measured via sap/perk_probe.py, Honey's Bee and
+ * Birthday Cake's sell value are real Ability objects, while Meat Bone /
+ * Garlic / Melon / Steak / Chili have an empty Pairs list and no Trigger
+ * at all - their behaviour is hard-coded in the shipped build's combat
+ * pipeline, so they hook in where that pipeline lives here (Meat Bone in
+ * sap2_battle_ex's exchange, Garlic and Melon in sap2_absorb) rather
+ * than as a row. */
 static const Sap2Ability SAP2_PERK_ABILITY[SAP2_NUM_PERKS] = {
     /* NONE     */ {0},
     /* HONEY    */ {.trigger = SAP2_TRIG_DEATH, .selector = SAP2_SEL_SUMMON_SLOT,
                     .effect = SAP2_EFF_SUMMON, .count = 1, .attack = 1, .health = 1,
                     .param = SAP2_BEE, .level = 1},
-    /* MEATBONE */ {0}
+    /* MEATBONE */ {0},
+    /* GARLIC   */ {0},
+    /* MELON    */ {0},
+    /* B.CAKE   */ {.trigger = SAP2_TRIG_END_TURN, .selector = SAP2_SEL_SELF,
+                    /* BirthdayCakeAbility(762) is
+                     * EffectAddSellValue(1) -> TargetsSelf on
+                     * TriggerEndTurn, and it is cumulative: measured
+                     * (sap/tier3_drive.py `birthday_cake_perk`), a caked
+                     * Ant was worth 1 gold, then 2, then 3, then 4 over
+                     * three turn boundaries, while its twin stayed at 1.
+                     * The perk is MidBattle = false and does nothing in
+                     * a battle. */
+                    .effect = SAP2_EFF_ADD_SELL_VALUE, .count = 1, .attack = 1}
 };
 
 /* Resolves an amount against the firing pet's level. */
@@ -829,6 +1070,55 @@ static inline int sap2_amount(int8_t spec, int level) {
         return 3 * level;
     }
     return spec;
+}
+
+/* A percent-of-own-attack amount, scaled by level and FLOORED - Badger's
+ * splash and Dodo's hand-over. The multiplier lives in the shipped
+ * build's template as a System.Decimal inside a Calculator, which the
+ * template dump cannot read, so both were driven across odd attacks at
+ * all three levels (sap/tier3_drive.py `badger_percent`, `dodo_percent`)
+ * and agree on this one expression: 7 attack at level 1 is 3, not 4, and
+ * at level 3 is 10, not 11. */
+static inline int sap2_percent_of_attack(int percent, int level, int attack) {
+    return attack * percent * level / 100;
+}
+
+/* What a pet's perk does to incoming damage, and what that costs the
+ * perk. Both of these are `Shield` perks with an empty ability - the
+ * shipped build hard-codes them in its damage pipeline - so they are
+ * applied at every point damage lands rather than as a table row.
+ *
+ *   Garlic  takes 2 off, but never below 2 and never above what was
+ *           coming: measured (sap/tier3_drive.py `garlic_perk`, and the
+ *           same curve again through a build-phase Pill), 1 -> 1, 2 -> 2,
+ *           3 -> 2, 4 -> 2, 5 -> 3, 10 -> 8, 25 -> 23. PERMANENT: four
+ *           hits in a row were each reduced and the perk stayed on.
+ *           Ability damage is reduced exactly like an attack.
+ *   Melon   blocks 20, ONCE: 1, 5 and 20 damage all land as 0, 21 lands
+ *           as 1, 25 as 5, and the perk is gone afterwards whatever the
+ *           amount was - the next hit is unreduced. Ability damage and
+ *           attack damage alike, in battle and in the build phase.
+ *
+ * A hit Melon swallows entirely does not even count as being hurt: a
+ * Peacock wearing one took 5 and gained nothing, where the same Peacock
+ * took 25 (5 through the shield) and gained its +3. So the caller fires
+ * the hurt trigger on what this RETURNS, not on what was aimed. */
+static inline int sap2_absorb(uint8_t *perk, int amount) {
+    if (amount <= 0) {
+        return amount;
+    }
+    if (*perk == SAP2_PERK_GARLIC) {
+        if (amount > 2) {
+            amount = amount - 2 < 2 ? 2 : amount - 2;
+        }
+        return amount;
+    }
+    if (*perk == SAP2_PERK_MELON) {
+        *perk = SAP2_PERK_NONE;
+        amount -= 20;
+        return amount < 0 ? 0 : amount;
+    }
+    return amount;
 }
 
 /* What a shop-phase ability fires against: the seat, the pet firing it, and
@@ -858,13 +1148,29 @@ static inline void sap2_apply_buff(SapPet2 *p, int attack, int health, int durat
     sap2_clamp_stats(p);
 }
 
-/* The `count` nearest occupied team slots ahead of / behind `slot`.
+/* Is this slot a legal TARGET? Same rule as the battle line's
+ * sap2_battle_targetable, and for the same reason: a pet damaged to <=0
+ * is MID-FAINT - still in its slot, still counted - until the damage
+ * that dropped it finishes resolving, and no target finder can see it.
+ * Measured in the build phase as well as in battle (sap/tier3_drive.py):
+ * a Peacock taken to exactly 0 by a Pilled Hedgehog's splash gains
+ * nothing at all, while a Camel taken to 0 by the same splash still
+ * hands its buff to a LIVING friend behind - so the gate is on the
+ * target, not on whether the trigger fired. */
+static inline int sap2_seat_targetable(const SapSeat2 *s, int slot) {
+    return slot >= 0 && s->team[slot].species != SAP2_SPECIES_EMPTY
+           && sap2_pet_health(&s->team[slot]) > 0;
+}
+
+/* The `count` nearest LIVING team slots ahead of / behind `slot`.
  * "Ahead" is toward index 0: that is the front of the line in the shipped
- * build's grid, which is what Snail buffs and Flamingo's opposite. */
+ * build's grid, which is what Snail buffs and Flamingo's opposite. A
+ * mid-faint body is stepped over and does not use up one of the `count`
+ * targets - see sap2_seat_targetable. */
 static inline int sap2_friends_ahead(const SapSeat2 *s, int slot, int count, int *out) {
     int n = 0;
     for (int i = slot - 1; i >= 0 && n < count; i--) {
-        if (s->team[i].species != SAP2_SPECIES_EMPTY) {
+        if (sap2_seat_targetable(s, i)) {
             out[n++] = i;
         }
     }
@@ -874,7 +1180,7 @@ static inline int sap2_friends_ahead(const SapSeat2 *s, int slot, int count, int
 static inline int sap2_friends_behind(const SapSeat2 *s, int slot, int count, int *out) {
     int n = 0;
     for (int i = slot + 1; i < SAP2_TEAM && n < count; i++) {
-        if (s->team[i].species != SAP2_SPECIES_EMPTY) {
+        if (sap2_seat_targetable(s, i)) {
             out[n++] = i;
         }
     }
@@ -897,36 +1203,129 @@ static inline int sap2_condition_holds(const Sap2Ability *ab, const Sap2Ctx *ctx
 }
 
 static inline void sap2_seat_damage(SapSeat2 *s, const int *slots, int n, int amount);
+static inline void sap2_seat_resolve(SapSeat2 *s, const int *slots, int n);
 static inline void sap2_seat_faint(SapSeat2 *s, int slot);
 static inline void sap2_fire_watchers(SapSeat2 *s, int trigger, int trigger_slot);
 
-/* Fires `species`'s abilities that listen for `trigger`, against a seat.
- * The battle-phase half of the same table is sap2_battle_fire. */
-static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
-    for (int slot = 0; slot < SAP2_MAX_ABILITIES; slot++) {
-        const Sap2Ability *ab = &SAP2_ABILITY[species][slot];
-        if (ab->trigger != trigger || ab->effect == SAP2_EFF_NONE) {
-            continue;
+/* Frees team slot `dest` for a summon, pushing whatever is there.
+ *
+ * This is sap2_battle_insert's rule over a SEAT, whose slots run the
+ * other way round (slot 0 is the front, cell 4 is), and it is the seat
+ * side that pinned it: measured on a Pilled Sheep, whose two Rams both
+ * aim at the slot it vacated (sap/tier3_drive.py `sheep_cells`, six
+ * layouts). The unbroken run of pets from `dest` BACKWARDS slides one
+ * further back when there is a free slot behind it; when there is not,
+ * the run from `dest` FORWARDS slides one further forward instead; when
+ * neither has room the team is full and the summon is dropped. Returns
+ * whether `dest` is now free.
+ *
+ * The forward case is the one that needed measuring, because "push the
+ * run back" alone has nowhere to go: a Sheep at the very back of the
+ * line puts its second Ram in FRONT of the first and moves the friend
+ * that was there one further forward, rather than in front of that
+ * friend. */
+static inline int sap2_seat_summon_gap(SapSeat2 *s, int dest) {
+    if (s->team[dest].species == SAP2_SPECIES_EMPTY) {
+        return 1;
+    }
+    int last = dest;
+    while (last + 1 < SAP2_TEAM && s->team[last + 1].species != SAP2_SPECIES_EMPTY) {
+        last++;
+    }
+    if (last + 1 < SAP2_TEAM) {
+        for (int i = last; i >= dest; i--) {
+            s->team[i + 1] = s->team[i];
         }
-        if (!sap2_condition_holds(ab, ctx)) {
-            continue;
+        s->team[dest].species = SAP2_SPECIES_EMPTY;
+        return 1;
+    }
+    int first = dest;
+    while (first - 1 >= 0 && s->team[first - 1].species != SAP2_SPECIES_EMPTY) {
+        first--;
+    }
+    if (first - 1 >= 0) {
+        for (int i = first; i <= dest; i++) {
+            s->team[i - 1] = s->team[i];
         }
+        s->team[dest].species = SAP2_SPECIES_EMPTY;
+        return 1;
+    }
+    return 0;
+}
+
+/* A perk just landed on `slot`: wake the friends that watch for a food
+ * being played on one of them - see the SAP2_SEL_SELF case below. */
+static inline void sap2_fire_perk_gained(SapSeat2 *s, int slot);
+
+/* Has this pet used up its per-turn activations? Measured on Rabbit
+ * (sap/tier3_drive.py `rabbit_limit`): the fourth and fifth food play of
+ * a turn carry no bonus at all, and the count resets at the turn
+ * boundary - so TriggerLimitType "All" is per TURN here, not per
+ * lifetime. Ox's cap is the same field with a level-many bound. */
+static inline int sap2_uses_left(const Sap2Ability *ab, const SapPet2 *p, int level) {
+    if (!ab->max_per_turn) {
+        return 1;
+    }
+    return p->uses < (uint8_t)sap2_amount(ab->max_per_turn, level);
+}
+
+/* Runs ONE ability row against a seat. Split out of sap2_fire because a
+ * PERK carries rows too (Honey's Bee, Birthday Cake's sell value) and
+ * they go through exactly the same selectors and effects - see
+ * sap2_fire_perk. */
+static inline void sap2_fire_row(const Sap2Ability *ab, Sap2Ctx *ctx) {
+    if (ab->effect == SAP2_EFF_NONE || !sap2_condition_holds(ab, ctx)) {
+        return;
+    }
+    if (ab->max_per_turn && ctx->self_slot >= 0
+        && !sap2_uses_left(ab, &ctx->seat->team[ctx->self_slot], ctx->level)) {
+        return;
+    }
+    {
         SapSeat2 *s = ctx->seat;
         const int attack = sap2_amount(ab->attack, ctx->level);
         const int health = sap2_amount(ab->health, ctx->level);
         const int count = sap2_amount(ab->count, ctx->level);
+        int landed = 0;
 
         switch (ab->selector) {
         case SAP2_SEL_SELF:
             if (ab->effect == SAP2_EFF_GAIN_GOLD) {
                 s->gold = (int16_t)(s->gold + attack);
-            } else if (ctx->self_slot >= 0) {
-                sap2_apply_buff(&s->team[ctx->self_slot], attack, health, ab->duration);
+                landed = 1;
+            } else if (sap2_seat_targetable(s, ctx->self_slot)) {
+                /* A mid-faint body is not a target even for its own
+                 * ability - see sap2_seat_targetable. */
+                SapPet2 *self = &s->team[ctx->self_slot];
+                if (ab->effect == SAP2_EFF_ADD_SELL_VALUE) {
+                    self->sell_bonus = (uint8_t)(self->sell_bonus + attack);
+                } else {
+                    sap2_apply_buff(self, attack, health, ab->duration);
+                    if (ab->grant_perk) {
+                        self->perk = ab->grant_perk;
+                        /* Landing a PERK on a pet is a spell played on a
+                         * friendly as far as the trigger bus is
+                         * concerned, so it wakes Rabbit exactly as a food
+                         * does. Measured (sap/tier3_drive.py): an Ox that
+                         * gained Melon from a Pilled friend ahead of it
+                         * fired OxAbility and then RabbitAbility, and the
+                         * Ox came out +3 health as well as +1 attack. A
+                         * plain BUFF does not do this - a Camel's and an
+                         * Otter's buffs woke nothing. */
+                        sap2_fire_perk_gained(s, ctx->self_slot);
+                    }
+                }
+                landed = 1;
             }
             break;
         case SAP2_SEL_TRIGGER_TARGET:
-            if (ctx->trigger_slot >= 0 && s->team[ctx->trigger_slot].species != SAP2_SPECIES_EMPTY) {
+            /* The pet the trigger was ABOUT: for Horse the pet just
+             * summoned, for Rabbit whoever just ate - which is the Rabbit
+             * itself only when the food was aimed at it (measured,
+             * sap/tier3_drive.py `rabbit_other_eater`). */
+            if (sap2_seat_targetable(s, ctx->trigger_slot)) {
                 sap2_apply_buff(&s->team[ctx->trigger_slot], attack, health, ab->duration);
+                landed = 1;
             }
             break;
         case SAP2_SEL_RANDOM_FRIEND: {
@@ -937,20 +1336,97 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
             for (int i = 0; i < k; i++) {
                 sap2_apply_buff(&s->team[picked[i]], attack, health, ab->duration);
             }
+            landed = k > 0;
             break;
         }
         case SAP2_SEL_FRIENDS_AHEAD:
         case SAP2_SEL_FRIENDS_BEHIND: {
-            /* Positional, so no randomness is consumed - measured counts
-             * are fixed across levels (Snail three ahead, Flamingo two
-             * behind); only the amount scales. */
+            /* Positional, so no randomness is consumed. Snail's three
+             * ahead and Flamingo's two behind are fixed across levels and
+             * only the amount scales; Giraffe is the other way round, a
+             * flat +1/+1 onto LEVEL-many friends ahead.
+             *
+             * The amount is a percentage of the firing pet's own attack
+             * when the row says so - Dodo, whose buff is attack only. */
             int picked[SAP2_TEAM];
             const int k = ab->selector == SAP2_SEL_FRIENDS_AHEAD
                               ? sap2_friends_ahead(s, ctx->self_slot, count, picked)
                               : sap2_friends_behind(s, ctx->self_slot, count, picked);
-            for (int i = 0; i < k; i++) {
-                sap2_apply_buff(&s->team[picked[i]], attack, health, ab->duration);
+            int gain_a = attack, gain_h = health;
+            if (ab->percent && ctx->self_slot >= 0) {
+                gain_a = sap2_percent_of_attack(ab->percent, ctx->level,
+                                                sap2_pet_attack(&s->team[ctx->self_slot]));
+                gain_h = 0;
             }
+            if (ab->effect == SAP2_EFF_DAMAGE) {
+                /* Elephant: the nearest ONE behind, hit `count` times,
+                 * re-picked per shot and with the faints deferred to the
+                 * end - see sap2_seat_damage's repeat note. */
+                int hit_slots[SAP2_TEAM];
+                int nhit = 0;
+                for (int shot = 0; shot < count; shot++) {
+                    int one[1];
+                    if (!sap2_friends_behind(s, ctx->self_slot, 1, one)) {
+                        break;
+                    }
+                    {
+                        SapPet2 *victim = &s->team[one[0]];
+                        int rest = sap2_absorb(&victim->perk, gain_a);
+                        if (victim->temp_health > 0 && rest > 0) {
+                            const int off = victim->temp_health < rest ? victim->temp_health : rest;
+                            victim->temp_health = (int8_t)(victim->temp_health - off);
+                            rest -= off;
+                        }
+                        victim->health = (int8_t)(victim->health - rest);
+                    }
+                    int seen = 0;
+                    for (int q = 0; q < nhit; q++) {
+                        seen |= hit_slots[q] == one[0];
+                    }
+                    if (!seen) {
+                        hit_slots[nhit++] = one[0];
+                    }
+                    landed = 1;
+                }
+                if (nhit) {
+                    /* Every shot has landed; now the hurt triggers and
+                     * the faints, once. */
+                    sap2_seat_resolve(s, hit_slots, nhit);
+                }
+                break;
+            }
+            for (int i = 0; i < k; i++) {
+                sap2_apply_buff(&s->team[picked[i]], gain_a, gain_h, ab->duration);
+            }
+            landed = k > 0;
+            break;
+        }
+        case SAP2_SEL_ADJACENT_ANY_TEAM: {
+            /* Badger, in the build phase: there is no opponent board
+             * here, so "adjacent on either team" is the nearest LIVING
+             * pet each way along this one line. Measured
+             * (sap/tier3_drive.py): a Pilled Badger with a friend on each
+             * side killed both, and at the front of the line it hit only
+             * the one behind it. Nearest-living rather than
+             * strictly-neighbouring-slot, because that is what the same
+             * finder does in battle, where a mid-faint body in the way is
+             * stepped over - see the battle half of this case. */
+            int ahead[1], behind[1];
+            int targets[2];
+            int n = 0;
+            if (sap2_friends_ahead(s, ctx->self_slot, 1, ahead)) {
+                targets[n++] = ahead[0];
+            }
+            if (sap2_friends_behind(s, ctx->self_slot, 1, behind)) {
+                targets[n++] = behind[0];
+            }
+            const int amount = ab->percent && ctx->self_slot >= 0
+                                   ? sap2_percent_of_attack(
+                                         ab->percent, ctx->level,
+                                         sap2_pet_attack(&s->team[ctx->self_slot]))
+                                   : attack;
+            sap2_seat_damage(s, targets, n, amount);
+            landed = n > 0;
             break;
         }
         case SAP2_SEL_SHOP_PETS:
@@ -959,6 +1435,7 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
                     s->shop_pets[i].hp_bonus = (int8_t)(s->shop_pets[i].hp_bonus + health);
                 }
             }
+            landed = 1;
             break;
         case SAP2_SEL_SHOP_FOOD: {
             /* Prepend `count` copies at the row's price; the rolled stock
@@ -980,6 +1457,7 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
                 s->shop_food[f].frozen = 0;
                 s->shop_food[f].price = ab->price;
             }
+            landed = count > 0;
             break;
         }
         case SAP2_SEL_ALL_MINIONS: {
@@ -992,40 +1470,110 @@ static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
             int targets[SAP2_TEAM];
             int n = 0;
             for (int i = 0; i < SAP2_TEAM; i++) {
-                if (i != ctx->self_slot && s->team[i].species != SAP2_SPECIES_EMPTY) {
+                if (i != ctx->self_slot && sap2_seat_targetable(s, i)) {
                     targets[n++] = i;
                 }
             }
             sap2_seat_damage(s, targets, n, attack);
+            landed = n > 0;
             break;
         }
         case SAP2_SEL_SUMMON_SLOT: {
-            /* A faint in the build phase summons into the slot the body
+            /* A faint in the build phase summons into the SLOT the body
              * just left - measured: a Cricket given a Pill leaves a
              * CricketToken 1/1 in its own slot, and a Honey pet leaves a
-             * Bee. The slot is the one the trigger was about. */
+             * Bee. The slot is the one the trigger was about.
+             *
+             * A SECOND copy aims at the same slot and pushes what is
+             * already there, exactly as the battle line does - measured
+             * on a Pilled Sheep (sap/tier3_drive.py `sheep_cells`): with
+             * a friend behind it the two Rams take the Sheep's slot and
+             * the one behind, pushing that friend one further back;
+             * at the back of the line, where there is no room behind,
+             * they take the Sheep's slot and the one in FRONT and push
+             * forward instead; and on a full team only the first lands.
+             * sap2_seat_summon_gap is the same rule sap2_battle_insert
+             * implements over cells. */
             const int dest = ctx->trigger_slot;
-            if (dest < 0 || s->team[dest].species != SAP2_SPECIES_EMPTY) {
+            if (dest < 0) {
                 break;
             }
+            /* Spider's catalogue names no species at all: it is a
+             * MinionCatalogueFind over the rollable pets of one tier,
+             * drawn uniformly (measured over 600 faints). */
+            uint8_t species = ab->param;
             for (int c = 0; c < (count > 0 ? count : 1); c++) {
+                if (ab->summon_tier) {
+                    uint8_t pool[SAP2_NUM_SHOP_SPECIES];
+                    int n = 0;
+                    for (int sp = 1; sp <= SAP2_NUM_SHOP_SPECIES; sp++) {
+                        if (SAP2_SPECIES_TIER[sp] == ab->summon_tier) {
+                            pool[n++] = (uint8_t)sp;
+                        }
+                    }
+                    if (n == 0) {
+                        break;
+                    }
+                    species = pool[sap2_splitmix64(&s->rng) % (uint64_t)n];
+                }
+                if (!sap2_seat_summon_gap(s, dest)) {
+                    break; /* a full team takes nothing - measured */
+                }
                 SapPet2 *p = &s->team[dest];
-                p->species = ab->param;
+                memset(p, 0, sizeof(*p));
+                p->species = species;
                 p->attack = (int8_t)attack;
                 p->health = (int8_t)health;
-                p->temp_attack = 0;
-                p->temp_health = 0;
                 p->level = (uint8_t)(ab->level ? ab->level : ctx->level);
                 p->xp = SAP2_LEVEL_REQUIREMENTS[p->level - 1];
-                p->perk = SAP2_PERK_NONE;
                 sap2_clamp_stats(p);
+                sap2_fire_watchers(s, SAP2_TRIG_SUMMON, dest);
+                landed = 1;
             }
-            sap2_fire_watchers(s, SAP2_TRIG_SUMMON, dest);
             break;
         }
         default:
             break;
         }
+        /* An activation only counts once something landed: the shipped
+         * build charges its TriggerLimit against the CAST, and an ability
+         * that found no target never cast (Interuptor = FirstZeroTargets).
+         * Measured on Rabbit, whose three plays a turn are three plays
+         * that actually buffed something. */
+        if (ab->max_per_turn && landed && ctx->self_slot >= 0
+            && s->team[ctx->self_slot].species != SAP2_SPECIES_EMPTY) {
+            s->team[ctx->self_slot].uses = (uint8_t)(s->team[ctx->self_slot].uses + 1);
+        }
+    }
+}
+
+/* Fires every row `species` has for `trigger`. The battle-phase half of
+ * the same table is sap2_battle_fire. */
+static inline void sap2_fire(uint8_t species, int trigger, Sap2Ctx *ctx) {
+    for (int slot = 0; slot < SAP2_MAX_ABILITIES; slot++) {
+        const Sap2Ability *ab = &SAP2_ABILITY[species][slot];
+        if (ab->trigger == trigger) {
+            sap2_fire_row(ab, ctx);
+        }
+    }
+}
+
+/* And the row a PERK carries, on the pet rather than the species. */
+static inline void sap2_fire_perk(uint8_t perk, int trigger, Sap2Ctx *ctx) {
+    if (perk != SAP2_PERK_NONE && SAP2_PERK_ABILITY[perk].trigger == trigger) {
+        sap2_fire_row(&SAP2_PERK_ABILITY[perk], ctx);
+    }
+}
+
+/* Something put a food or a perk ON this pet: the trigger bus offers
+ * that to every friend, the eater itself included. Rabbit is the
+ * listener here, and the target it buffs is the pet that was fed - see
+ * its row. */
+static inline void sap2_fire_perk_gained(SapSeat2 *s, int slot) {
+    sap2_fire_watchers(s, SAP2_TRIG_EAT_FOOD, slot);
+    if (s->team[slot].species != SAP2_SPECIES_EMPTY) {
+        Sap2Ctx ctx = {s, slot, slot, s->team[slot].level};
+        sap2_fire(s->team[slot].species, SAP2_TRIG_EAT_FOOD, &ctx);
     }
 }
 
@@ -1038,57 +1586,105 @@ static inline void sap2_seat_faint(SapSeat2 *s, int slot) {
     Sap2Ctx ctx = {s, slot, slot, s->team[slot].level};
 
     sap2_fire(species, SAP2_TRIG_BEFORE_DEATH, &ctx);
+    /* In the same window, the friend in the slot DIRECTLY BEHIND reacts
+     * to the faint ahead of it - Ox. Measured (sap/tier3_drive.py
+     * `ox_friend_ahead`): only distance 1 counts, and a Pilled friend
+     * directly ahead of an Ox in the shop wakes it exactly as a battle
+     * faint does. It is the SLOT that decides, not the nearest living
+     * friend: with two friends ahead dying together a level-3 Ox still
+     * fired once, because the nearer body was standing mid-faint when
+     * the further one went. */
+    if (slot + 1 < SAP2_TEAM && s->team[slot + 1].species != SAP2_SPECIES_EMPTY) {
+        Sap2Ctx wc = {s, slot + 1, slot, s->team[slot + 1].level};
+        sap2_fire(s->team[slot + 1].species, SAP2_TRIG_FRIEND_AHEAD_FAINTED, &wc);
+    }
     const uint8_t perk = s->team[slot].perk;
     memset(&s->team[slot], 0, sizeof(s->team[slot]));
     ctx.self_slot = -1;
     sap2_fire(species, SAP2_TRIG_DEATH, &ctx);
-    if (perk != SAP2_PERK_NONE && SAP2_PERK_ABILITY[perk].trigger == SAP2_TRIG_DEATH) {
-        /* Honey's Bee lands in the build phase too - measured. */
-        const Sap2Ability *pa = &SAP2_PERK_ABILITY[perk];
-        if (s->team[slot].species == SAP2_SPECIES_EMPTY) {
-            s->team[slot].species = pa->param;
-            s->team[slot].attack = pa->attack;
-            s->team[slot].health = pa->health;
-            s->team[slot].level = pa->level ? pa->level : 1;
-            sap2_fire_watchers(s, SAP2_TRIG_SUMMON, slot);
-        }
-    }
+    /* Honey's Bee lands in the build phase too - measured. It goes
+     * through the same row interpreter as a species ability. */
+    sap2_fire_perk(perk, SAP2_TRIG_DEATH, &ctx);
 }
 
 /* Damage in the BUILD phase, and the reactions it causes. Same shape as
- * the battle pipeline (damage, then the survivors' hurt triggers, then the
- * faints) because that is what the shipped build does on either board -
- * measured via sap/order_probe.py on a real board driven through the
- * resolver's own PlaySpell:
+ * the battle pipeline (damage, then the hurt triggers, then the faints)
+ * because that is what the shipped build does on either board - measured
+ * via sap/order_probe.py and sap/tier3_drive.py on real boards driven
+ * through the resolver's own PlaySpell:
  *
+ *  - the defender's perk comes off the amount first - a Garlic pet took
+ *    4 of a level-3 Hedgehog's 6, a Melon pet took none of it and lost
+ *    the perk. See sap2_absorb;
  *  - health goes to the exact NEGATIVE value; it is not clamped at 0, and
  *    exactly 0 destroys just as -1 does;
  *  - a destroyed pet leaves its slot EMPTY and the line is NOT compacted,
  *    so the hole stays until something is dropped into it;
  *  - the hurt trigger fires here too - a Peacock hit by two Pill-driven
- *    Hedgehog faints ends +6 attack, not +3.
+ *    Hedgehog faints ends +6 attack, not +3 - and it fires even when the
+ *    damage was LETHAL. What a lethal hit costs is the TARGET, not the
+ *    trigger: a Camel taken to 0 still buffs a living friend behind,
+ *    while a Peacock taken to 0 buffs nothing because it is its own
+ *    target and a mid-faint body is not targetable.
  *
  * Faints resolve highest attack first, the same queue order the battle
  * uses; there is no coin flip on a tie here because a build-phase tie has
- * not been measured and the shop RNG stream is the wrong place to guess. */
+ * not been measured and the shop RNG stream is the wrong place to guess.
+ */
 static inline void sap2_seat_damage(SapSeat2 *s, const int *slots, int n, int amount) {
-    int dying[SAP2_TEAM];
-    int nd = 0;
+    int hurt[SAP2_TEAM];
+    int nh = 0;
 
     for (int t = 0; t < n; t++) {
         SapPet2 *p = &s->team[slots[t]];
         if (p->species == SAP2_SPECIES_EMPTY) {
             continue;
         }
-        p->health = (int8_t)(p->health - amount);
-        if (sap2_pet_health(p) <= 0) {
-            dying[nd++] = slots[t];
-        } else {
-            Sap2Ctx hc = {s, slots[t], slots[t], p->level};
-            sap2_fire(p->species, SAP2_TRIG_HURT, &hc);
+        const int taken = sap2_absorb(&p->perk, amount);
+        if (taken <= 0) {
+            continue; /* a hit the shield swallowed whole is not a hurt */
         }
+        /* Damage eats the TEMPORARY health first and only then the
+         * permanent half - measured (sap/tier3_drive.py): a Muffin'd Pig
+         * at perm 1 / temp 3 took a level-1 Hedgehog's 2 and came out
+         * perm 1 / temp 1, and took a level-3 Hedgehog's 6 and came out
+         * perm -2 / temp 0. The battle line does not need this: it is a
+         * throwaway copy of the TOTALS and has no split to spend. */
+        int rest = taken;
+        if (p->temp_health > 0) {
+            const int off = p->temp_health < rest ? p->temp_health : rest;
+            p->temp_health = (int8_t)(p->temp_health - off);
+            rest -= off;
+        }
+        p->health = (int8_t)(p->health - rest);
+        hurt[nh++] = slots[t];
     }
 
+    sap2_seat_resolve(s, hurt, nh);
+}
+
+/* The reactions to damage that has already landed: the hurt triggers of
+ * everything named, then the faints, highest attack first. Split out
+ * because Elephant's repeats subtract their own health - every shot has
+ * to land before any faint does - and then come here. */
+static inline void sap2_seat_resolve(SapSeat2 *s, const int *slots, int n) {
+    for (int t = 0; t < n; t++) {
+        SapPet2 *p = &s->team[slots[t]];
+        if (p->species == SAP2_SPECIES_EMPTY) {
+            continue;
+        }
+        Sap2Ctx hc = {s, slots[t], slots[t], p->level};
+        sap2_fire(p->species, SAP2_TRIG_HURT, &hc);
+    }
+
+    int dying[SAP2_TEAM];
+    int nd = 0;
+    for (int t = 0; t < n; t++) {
+        if (s->team[slots[t]].species != SAP2_SPECIES_EMPTY
+            && sap2_pet_health(&s->team[slots[t]]) <= 0) {
+            dying[nd++] = slots[t];
+        }
+    }
     for (int i = 0; i < nd; i++) {
         int pick = i;
         for (int j = i + 1; j < nd; j++) {
@@ -1101,7 +1697,10 @@ static inline void sap2_seat_damage(SapSeat2 *s, const int *slots, int n, int am
         dying[pick] = tmp;
     }
     for (int t = 0; t < nd; t++) {
-        sap2_seat_faint(s, dying[t]);
+        if (s->team[dying[t]].species != SAP2_SPECIES_EMPTY
+            && sap2_pet_health(&s->team[dying[t]]) <= 0) {
+            sap2_seat_faint(s, dying[t]);
+        }
     }
 }
 
@@ -1189,6 +1788,14 @@ static inline void sap2_stack_onto(SapSeat2 *s, int target, const SapPet2 *incom
     if (a->perk == SAP2_PERK_NONE) {
         a->perk = incoming->perk;
     }
+    /* A merge keeps both halves of what the two cards were worth: the
+     * sell bonus adds, and the per-turn activation counters do too, so
+     * merging a spent Rabbit into a fresh one does not hand back its
+     * uses. Neither is separately measured - no Pack1 fixture puts a
+     * Birthday Cake or a spent Rabbit into a merge - so these follow the
+     * sell value and the counter each being a property of the CARD. */
+    a->sell_bonus = (uint8_t)(a->sell_bonus + incoming->sell_bonus);
+    a->uses = (uint8_t)(a->uses + incoming->uses);
 
     /* The level-up trigger, fired on the pet that just levelled. Measured:
      * Fish gives exactly TWO random friends +(new level - 1), so a Fish
@@ -1334,13 +1941,18 @@ static inline void sap2_buy_pet(SapSeat2 *s, int shop_slot, int dest) {
     s->team[dest].level = 1;
     s->team[dest].xp = 0; /* measured: a bought pet starts at exp 0, not 1 */
     s->team[dest].perk = SAP2_PERK_NONE;
+    s->team[dest].sell_bonus = 0;
+    s->team[dest].uses = 0;
 
     sap2_fire_friend_summoned(s, dest);
     sap2_fire_on_play(s, dest);
 }
 
-/* Sell value is the pet's LEVEL, 1/2/3 - measured from the shipped build
- * via policy-clash-re-tools, and independent of how big the pet's stats got.
+/* Sell value is the pet's LEVEL, 1/2/3, plus whatever a Birthday Cake has
+ * added to it - measured from the shipped build via policy-clash-re-tools,
+ * and otherwise independent of how big the pet's stats got. The cake's
+ * gold is a PerkTemplate ability (EffectAddSellValue) that fires at every
+ * end of turn and accumulates; see SAP2_PERK_ABILITY.
  *
  * Two triggers fire here, in the order the shipped build names them:
  * BEFORE_SELL first (Pig, which doubles the sale by handing over another
@@ -1360,7 +1972,7 @@ static inline void sap2_sell(SapSeat2 *s, int slot) {
     Sap2Ctx ctx = {s, slot, slot, sold.level};
 
     sap2_fire(sold.species, SAP2_TRIG_BEFORE_SELL, &ctx);
-    s->gold = (int16_t)(s->gold + sold.level);
+    s->gold = (int16_t)(s->gold + sold.level + sold.sell_bonus);
     s->team[slot].species = SAP2_SPECIES_EMPTY;
     sap2_fire(sold.species, SAP2_TRIG_SELL, &ctx);
 }
@@ -1401,11 +2013,46 @@ static inline void sap2_reposition(SapSeat2 *s, int i, int j) {
  *                the body is gone (measured: an Ant given a Pill next to
  *                a Cricket left the Cricket permanently +1/+1).
  *
+ *   Birthday Cake  no stat change; leaves a perk worth +1 gold on this
+ *                pet's sale price at every end of turn (measured,
+ *                sap/tier3_drive.py `birthday_cake_perk`).
+ *   Garlic       no stat change; leaves a perk that takes 2 off every
+ *                incoming damage, permanently - see sap2_absorb.
+ *   Salad Bowl   +1/+1 permanent to TWO RANDOM friends, and it is played
+ *                on the BOARD, not on a pet: measured
+ *                (sap/tier3_drive.py `salad_bowl`) over 40 seeds on a
+ *                four-pet team it always buffed exactly two, 23/14/21/22
+ *                across the four, and on a one-pet team it buffed that
+ *                one. `target` is therefore ignored here, and
+ *                sap2_legal_for offers the play once rather than five
+ *                times - see sap2_food_is_board_wide.
+ *
+ * Whatever the food does, feeding one wakes the friends that watch for
+ * it: Rabbit's trigger is the build's FoodEatenByFriendly and its target
+ * is the EATER, not itself (measured, `rabbit_other_eater`). A
+ * board-wide food has no eater and wakes nothing.
+ *
  * The price comes from the SLOT, not the food id - see SapShopFood2. */
 static inline void sap2_buy_food(SapSeat2 *s, int food_slot, int target) {
     const uint8_t food = s->shop_food[food_slot].species;
     s->gold = (int16_t)(s->gold - s->shop_food[food_slot].price);
     sap2_shop_remove_food(s, food_slot);
+
+    if (sap2_food_is_board_wide(food)) {
+        int friends[SAP2_TEAM];
+        int n = 0;
+        for (int i = 0; i < SAP2_TEAM; i++) {
+            if (sap2_seat_targetable(s, i)) {
+                friends[n++] = i;
+            }
+        }
+        int picked[SAP2_TEAM];
+        const int k = sap2_pick_random(&s->rng, friends, n, 2, picked);
+        for (int i = 0; i < k; i++) {
+            sap2_apply_buff(&s->team[picked[i]], 1, 1, SAP2_DUR_PERM);
+        }
+        return;
+    }
 
     SapPet2 *p = &s->team[target];
     switch (food) {
@@ -1428,6 +2075,12 @@ static inline void sap2_buy_food(SapSeat2 *s, int food_slot, int target) {
     case SAP2_MEAT_BONE:
         p->perk = SAP2_PERK_MEAT_BONE;
         break;
+    case SAP2_GARLIC:
+        p->perk = SAP2_PERK_GARLIC;
+        break;
+    case SAP2_BIRTHDAY_CAKE:
+        p->perk = SAP2_PERK_BIRTHDAY_CAKE;
+        break;
     case SAP2_MUFFIN:
         sap2_apply_buff(p, 3, 3, SAP2_DUR_TEMP);
         break;
@@ -1435,12 +2088,25 @@ static inline void sap2_buy_food(SapSeat2 *s, int food_slot, int target) {
         /* Destroys the pet, and its faint runs the full sequence - the
          * same one a battle faint runs, so a Pilled Cricket leaves a
          * token in its slot and a Pilled Hedgehog's damage goes out over
-         * the rest of the team. */
+         * the rest of the team.
+         *
+         * Its health goes to 0 FIRST, so that for the whole of that
+         * sequence it is mid-faint and no finder can see it - the same
+         * state a pet damaged to 0 is in. Without it a Pilled Hedgehog
+         * was still a candidate for the Ant its own splash had just
+         * killed, and the random pick landed on a body the shipped build
+         * had already taken off the table. */
+        p->health = 0;
+        p->temp_health = 0;
         sap2_seat_faint(s, target);
         break;
     default:
         break;
     }
+    /* The eater itself watches too: FoodEatenByFriendly counts the pet
+     * that ate, so a Rabbit fed an Apple buffs itself (measured, the
+     * ability_check fixture that feeds the Rabbit directly). */
+    sap2_fire_perk_gained(s, target);
 }
 
 static inline void sap2_toggle_freeze_pet(SapSeat2 *s, int slot) {
@@ -1501,10 +2167,18 @@ static inline void sap2_legal_for(const SapSeat2 *s, int pet_slots, uint8_t *out
     }
     for (int f = 0; f < SAP2_FOOD_SLOTS; f++) {
         const uint8_t food = s->shop_food[f].species;
+        const int affordable = food != SAP2_FOOD_EMPTY && s->gold >= s->shop_food[f].price;
         for (int t = 0; t < SAP2_TEAM; t++) {
-            out[SAP2_ACT_BUY_FOOD_BASE + f * SAP2_TEAM + t] =
-                (uint8_t)(food != SAP2_FOOD_EMPTY && s->gold >= s->shop_food[f].price &&
-                          s->team[t].species != SAP2_SPECIES_EMPTY);
+            /* A board-wide food (Salad Bowl) is one play, not five: it
+             * takes no aim at all in the shipped build, which drops a
+             * PlaySpell that names a target outright. It is offered on
+             * target 0, which stands for "played on the board", and it
+             * needs no pet there - the build accepts it on an empty team
+             * too, and simply wastes it. */
+            const int ok = sap2_food_is_board_wide(food)
+                               ? t == 0
+                               : s->team[t].species != SAP2_SPECIES_EMPTY;
+            out[SAP2_ACT_BUY_FOOD_BASE + f * SAP2_TEAM + t] = (uint8_t)(affordable && ok);
         }
     }
     for (int k = 0; k < pet_slots; k++) {
@@ -1517,8 +2191,10 @@ static inline void sap2_legal_for(const SapSeat2 *s, int pet_slots, uint8_t *out
 
 /* End-of-turn abilities fire when this seat's build phase closes, on
  * either path out of it: the explicit END_TURN action, or the action
- * budget running out. Snail is the case here, and its condition means
- * nothing fires on a round the seat did not lose. */
+ * budget running out. Snail is the species case here, and its condition
+ * means nothing fires on a round the seat did not lose; Birthday Cake is
+ * the PERK case, and it fires unconditionally, every turn, for as long
+ * as the cake is on the pet. */
 static inline void sap2_fire_end_turn(SapSeat2 *s) {
     for (int t = 0; t < SAP2_TEAM; t++) {
         if (s->team[t].species == SAP2_SPECIES_EMPTY) {
@@ -1526,6 +2202,7 @@ static inline void sap2_fire_end_turn(SapSeat2 *s) {
         }
         Sap2Ctx ctx = {s, t, t, s->team[t].level};
         sap2_fire(s->team[t].species, SAP2_TRIG_END_TURN, &ctx);
+        sap2_fire_perk(s->team[t].perk, SAP2_TRIG_END_TURN, &ctx);
     }
 }
 
@@ -1601,6 +2278,12 @@ typedef struct {
      * side and never reused within a battle. */
     uint8_t uid[2][SAP2_TEAM];
     uint8_t next_uid[2];
+    /* Activations a per-turn-capped ability has already spent, carried
+     * over from the pet (SapPet2.uses) so that the cap really is per
+     * TURN and not per phase: an Ox that already reacted to a Pilled
+     * friend in the shop arrives with one spent. Ox is the only battle
+     * case in this roster. */
+    uint8_t uses[2][SAP2_TEAM];
     int count[2];
     /* The GRID CELL each body occupies, nearer the front the higher, kept
      * alongside the packed order rather than derived from it. The shipped
@@ -1645,6 +2328,7 @@ static inline void sap2_battle_load(SapBattle2 *b, const SapSeat2 *s, int side) 
         b->species[side][n] = s->team[i].species;
         b->level[side][n] = s->team[i].level;
         b->perk[side][n] = s->team[i].perk;
+        b->uses[side][n] = s->team[i].uses;
         b->uid[side][n] = (uint8_t)n;
         b->cell[side][n] = (uint8_t)(SAP2_TEAM - 1 - n);
         n++;
@@ -1661,6 +2345,7 @@ static inline void sap2_battle_remove(SapBattle2 *b, int side, int idx) {
         b->level[side][i] = b->level[side][i + 1];
         b->perk[side][i] = b->perk[side][i + 1];
         b->uid[side][i] = b->uid[side][i + 1];
+        b->uses[side][i] = b->uses[side][i + 1];
         /* The survivors KEEP their cells: the shipped build leaves the
          * hole a body left behind until its next EmptyFront, and a summon
          * fired by that body's own death aims at exactly that hole. */
@@ -1736,15 +2421,26 @@ static inline void sap2_battle_insert(SapBattle2 *b, uint64_t *rng, int side, in
             last++;
         }
         if (b->cell[side][last] == 0) {
-            /* No room behind the run, so the only free cell is in front of
-             * the target and the body goes there instead. Not measured:
-             * reaching it needs a summon aimed at a mid-line cell with
-             * every cell behind it full, and the only mid-line target in
-             * this roster is a cell its own summoner has just vacated. */
-            while (at > 0 && b->cell[side][at - 1] == b->cell[side][at] + 1) {
-                at--;
+            /* No room behind the run, so the run in FRONT of the target
+             * slides one cell forward instead and the body still takes
+             * the cell it aimed at. Measured on the seat side, which is
+             * the same rule mirrored and where the case is easy to reach:
+             * a Pilled Sheep at the back of its line put its second Ram
+             * in front of the first and moved the friend that was there
+             * one further forward, rather than landing in front of that
+             * friend (sap/tier3_drive.py `sheep_cells`, and
+             * sap2_seat_summon_gap). */
+            int first = at;
+            while (first > 0 && b->cell[side][first - 1] == b->cell[side][first] + 1) {
+                first--;
             }
-            target = b->cell[side][at] + 1;
+            if (b->cell[side][first] >= SAP2_TEAM - 1) {
+                return; /* nowhere either way */
+            }
+            for (int i = first; i <= at; i++) {
+                b->cell[side][i] = (uint8_t)(b->cell[side][i] + 1);
+            }
+            at = at + 1;
         } else {
             for (int i = at; i <= last; i++) {
                 b->cell[side][i] = (uint8_t)(b->cell[side][i] - 1);
@@ -1758,6 +2454,7 @@ static inline void sap2_battle_insert(SapBattle2 *b, uint64_t *rng, int side, in
         b->level[side][i] = b->level[side][i - 1];
         b->perk[side][i] = b->perk[side][i - 1];
         b->uid[side][i] = b->uid[side][i - 1];
+        b->uses[side][i] = b->uses[side][i - 1];
         b->cell[side][i] = b->cell[side][i - 1];
     }
     b->attack[side][at] = atk;
@@ -1765,6 +2462,7 @@ static inline void sap2_battle_insert(SapBattle2 *b, uint64_t *rng, int side, in
     b->species[side][at] = species;
     b->level[side][at] = level;
     b->perk[side][at] = SAP2_PERK_NONE; /* a summoned token carries no perk */
+    b->uses[side][at] = 0;
     b->uid[side][at] = b->next_uid[side]++;
     b->cell[side][at] = (uint8_t)target;
     b->count[side]++;
@@ -1978,6 +2676,29 @@ static inline void sap2_battle_cascade(SapBattle2 *b, uint64_t *rng) {
         Sap2BattleCtx ctx = {b,   rng, next.side,     idx,
                              idx, c.level[slot], c.perk[slot], -1};
         sap2_battle_fire(c.species[slot], c.perk[slot], SAP2_TRIG_BEFORE_DEATH, &ctx);
+        /* In the same window, the body in the CELL directly behind this
+         * one reacts to the faint ahead of it - Ox. The cell, not the
+         * nearest living friend: measured (sap/tier3_drive.py
+         * `ox_friend_ahead`), with two friends ahead of a level-3 Ox
+         * dying in one blast it fired exactly once, because the nearer
+         * body was still standing mid-faint when the further one went,
+         * and the build's own finder carries
+         * FrontDistanceConsiderEmptySpaces - distance 1 means the
+         * neighbouring cell, occupied or not. */
+        {
+            const int dying = sap2_battle_find(b, next.side, next.uid);
+            const int cell = dying < 0 ? -1 : (int)b->cell[next.side][dying];
+            for (int w = 0; cell > 0 && w < b->count[next.side]; w++) {
+                if (b->cell[next.side][w] != (uint8_t)(cell - 1)) {
+                    continue;
+                }
+                Sap2BattleCtx wc = {b, rng, next.side, w, dying,
+                                    b->level[next.side][w], b->perk[next.side][w], -1};
+                sap2_battle_fire(b->species[next.side][w], SAP2_PERK_NONE,
+                                 SAP2_TRIG_FRIEND_AHEAD_FAINTED, &wc);
+                break;
+            }
+        }
     }
 
     /* The cell each body is about to vacate, read while the batch is still
@@ -2046,10 +2767,24 @@ static inline int sap2_battle_targetable(const SapBattle2 *b, int side, int i) {
     return b->health[side][i] > 0;
 }
 
-/* Damage, its hurt reactions, and then whatever cascade it started. The
- * hurt trigger is gated on SURVIVAL - measured: a Peacock at 2/5 taking 4
- * gains +3 attack, taking exactly 5 gains nothing at all, not even a
- * refusal - and it fires before any faint resolves. */
+/* Damage, its hurt reactions, and then whatever cascade it started.
+ *
+ * The defender's PERK comes off the amount first - Garlic's 2, Melon's
+ * one-shot 20 - see sap2_absorb.
+ *
+ * The hurt trigger fires on everything that actually LOST health,
+ * whether or not the loss was lethal. This used to be written as
+ * "survival is the whole gate", which fits Peacock (at 2/5, 4 damage
+ * gains +3 and exactly 5 gains nothing) but is the wrong reason for it:
+ * measured on Camel (sap/tier3_drive.py `camel_no_friend`), a Camel
+ * taken to exactly 0 still hands its buff to the friend behind, in
+ * battle and on a lethal trade alike. What a dying pet loses is not its
+ * trigger but its eligibility as a TARGET, and Peacock targets itself -
+ * see sap2_battle_targetable. A hit a Melon swallowed whole is not a
+ * hurt at all: a Peacock wearing one took 5 and gained nothing, then
+ * took 25 and gained its +3.
+ *
+ * Reactions come before any faint resolves, as they always did. */
 static inline void sap2_battle_damage(SapBattle2 *b, uint64_t *rng, const Sap2Target *targets,
                                        int n, int amount) {
     Sap2Target hurt[SAP2_MAX_DAMAGE_TARGETS];
@@ -2060,10 +2795,12 @@ static inline void sap2_battle_damage(SapBattle2 *b, uint64_t *rng, const Sap2Ta
         if (idx < 0) {
             continue;
         }
-        b->health[targets[t].side][idx] = (int8_t)(b->health[targets[t].side][idx] - amount);
-        if (b->health[targets[t].side][idx] > 0) {
-            hurt[nh++] = targets[t];
+        const int taken = sap2_absorb(&b->perk[targets[t].side][idx], amount);
+        if (taken <= 0) {
+            continue;
         }
+        b->health[targets[t].side][idx] = (int8_t)(b->health[targets[t].side][idx] - taken);
+        hurt[nh++] = targets[t];
     }
 
     for (int t = 0; t < nh; t++) {
@@ -2126,13 +2863,25 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
         if (!sap2_battle_condition_holds(ab, ctx)) {
             continue;
         }
+        /* The per-turn activation cap, carried on the body - Ox. See
+         * SapBattle2.uses. */
+        if (ab->max_per_turn && ctx->idx >= 0
+            && b->uses[side][ctx->idx] >= (uint8_t)sap2_amount(ab->max_per_turn, ctx->level)) {
+            continue;
+        }
         const int attack = sap2_amount(ab->attack, ctx->level);
         const int health = sap2_amount(ab->health, ctx->level);
         const int count = sap2_amount(ab->count, ctx->level);
+        const int own_attack = ctx->idx >= 0 ? (int)b->attack[side][ctx->idx] : 0;
+        int landed = 0;
 
         switch (ab->selector) {
         case SAP2_SEL_SELF:
-            if (ctx->idx < 0) {
+            /* A mid-faint body is not a target, not even its own -
+             * see sap2_battle_targetable. That single gate is what makes
+             * a Peacock taken to exactly 0 gain nothing while a Camel
+             * taken to 0 still buffs the friend behind it. */
+            if (ctx->idx < 0 || !sap2_battle_targetable(b, side, ctx->idx)) {
                 break;
             }
             if (ab->effect == SAP2_EFF_COPY_STATS) {
@@ -2159,8 +2908,23 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
             } else {
                 b->attack[side][ctx->idx] = (int8_t)(b->attack[side][ctx->idx] + attack);
                 b->health[side][ctx->idx] = (int8_t)(b->health[side][ctx->idx] + health);
+                /* Ox arrives here: the Melon perk rides on the same
+                 * effect as its +1 attack (the build's EffectComposite).
+                 * Landing a PERK is a spell played on a friendly as far
+                 * as the trigger bus is concerned, so it wakes Rabbit
+                 * exactly as a food does - measured
+                 * (sap/tier3_drive.py): an Ox that gained Melon with a
+                 * Rabbit behind it fired OxAbility and then
+                 * RabbitAbility, and came out +3 health as well as +1
+                 * attack. A plain buff wakes nothing. */
+                if (ab->grant_perk) {
+                    b->perk[side][ctx->idx] = ab->grant_perk;
+                    sap2_battle_fire_watchers(b, ctx->rng, side,
+                                              SAP2_TRIG_EAT_FOOD, ctx->idx);
+                }
             }
             sap2_battle_clamp(b, side, ctx->idx);
+            landed = 1;
             break;
         case SAP2_SEL_RANDOM_FRIEND: {
             int friends[SAP2_TEAM];
@@ -2178,13 +2942,16 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                 b->health[side][t] = (int8_t)(b->health[side][t] + health);
                 sap2_battle_clamp(b, side, t);
             }
+            landed = k > 0;
             break;
         }
         case SAP2_SEL_FRIENDS_AHEAD:
         case SAP2_SEL_FRIENDS_BEHIND: {
             /* Positional and packed: index 0 is the front of the line, so
              * "ahead" walks down from idx and "behind" walks up. Flamingo
-             * is the case here, and its count is fixed across levels.
+             * and Dodo are the buff cases here; Elephant is the DAMAGE
+             * case, and for it `count` is how many SHOTS the one nearest
+             * friend behind takes rather than how many friends are hit.
              *
              * A mid-faint body is stepped over and does not use up one of
              * the `count` targets - measured, see
@@ -2193,16 +2960,182 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                 break;
             }
             const int step = ab->selector == SAP2_SEL_FRIENDS_AHEAD ? -1 : 1;
+            if (ab->effect == SAP2_EFF_DAMAGE) {
+                /* Every shot lands before any faint resolves - measured
+                 * on a level-3 Elephant over a 1/2 Cricket, whose token
+                 * arrives only once the cascade runs and is not hit by
+                 * the third shot. So the health comes off here and the
+                 * hurt triggers and the cascade run once, at the end. */
+                Sap2Target hit_uids[SAP2_MAX_DAMAGE_TARGETS];
+                int nh = 0;
+                for (int shot = 0; shot < count; shot++) {
+                    int t = -1;
+                    for (int i = ctx->idx + step; i >= 0 && i < b->count[side]; i += step) {
+                        if (sap2_battle_targetable(b, side, i)) {
+                            t = i;
+                            break;
+                        }
+                    }
+                    if (t < 0) {
+                        break;
+                    }
+                    const int taken = sap2_absorb(&b->perk[side][t], attack);
+                    if (taken <= 0) {
+                        continue;
+                    }
+                    b->health[side][t] = (int8_t)(b->health[side][t] - taken);
+                    hit_uids[nh].side = side;
+                    hit_uids[nh].uid = b->uid[side][t];
+                    nh++;
+                    landed = 1;
+                }
+                for (int t = 0; t < nh; t++) {
+                    const int i = sap2_battle_find(b, side, hit_uids[t].uid);
+                    if (i < 0) {
+                        continue;
+                    }
+                    Sap2BattleCtx hc = {b,  ctx->rng, side, i, i,
+                                        b->level[side][i], b->perk[side][i], -1};
+                    sap2_battle_fire(b->species[side][i], SAP2_PERK_NONE,
+                                     SAP2_TRIG_HURT, &hc);
+                }
+                sap2_battle_cascade(b, ctx->rng);
+                break;
+            }
+            /* Dodo hands over a percentage of its OWN attack, floored,
+             * and nothing else - see sap2_percent_of_attack. */
+            const int gain_a = ab->percent
+                                   ? sap2_percent_of_attack(ab->percent, ctx->level, own_attack)
+                                   : attack;
+            const int gain_h = ab->percent ? 0 : health;
             int hit = 0;
             for (int i = ctx->idx + step; i >= 0 && i < b->count[side] && hit < count; i += step) {
                 if (!sap2_battle_targetable(b, side, i)) {
                     continue;
                 }
-                b->attack[side][i] = (int8_t)(b->attack[side][i] + attack);
-                b->health[side][i] = (int8_t)(b->health[side][i] + health);
+                b->attack[side][i] = (int8_t)(b->attack[side][i] + gain_a);
+                b->health[side][i] = (int8_t)(b->health[side][i] + gain_h);
                 sap2_battle_clamp(b, side, i);
                 hit++;
             }
+            landed = hit > 0;
+            break;
+        }
+        case SAP2_SEL_ADJACENT_ANY_TEAM: {
+            /* Badger. "Adjacent" is the nearest LIVING body each way
+             * along the merged ten-cell line, which means it crosses the
+             * battle line when nothing of its own is left ahead of it:
+             * measured (sap/tier3_drive.py `badger_cross_team`) - at the
+             * front with a friend behind it, both the friend and the
+             * enemy front took the splash; alone, only the enemy front
+             * did; mid-line, both friends and no enemy.
+             *
+             * NEAREST LIVING, not strictly the neighbouring cell: a
+             * mid-faint body in the way is stepped over, same as every
+             * other finder here (see sap2_battle_targetable). Measured on
+             * a differential board that only Tier 3 could produce -
+             * p0 [Badger 8/5] against p1 [Rat 5/7, Snail 3/3, Dodo 6/2],
+             * where the Badger and the Rat trade lethally and the
+             * Badger's 4 splash reaches the SNAIL behind the dying Rat,
+             * killing it; the shipped build's log shows exactly one
+             * 4-damage Hurt and three Deaths.
+             *
+             * On this side cells decrease with the index, so "ahead" is
+             * the first living body at a lower index and "behind" the
+             * first at a higher one; when nothing of its own is ahead,
+             * ahead is the enemy line's own frontmost living body. */
+            if (ctx->idx < 0) {
+                break;
+            }
+            Sap2Target targets[2];
+            int n = 0;
+            int found_ahead = 0;
+            for (int i = ctx->idx - 1; i >= 0; i--) {
+                if (sap2_battle_targetable(b, side, i)) {
+                    targets[n].side = side;
+                    targets[n].uid = b->uid[side][i];
+                    n++;
+                    found_ahead = 1;
+                    break;
+                }
+            }
+            if (!found_ahead) {
+                for (int i = 0; i < b->count[enemy]; i++) {
+                    if (sap2_battle_targetable(b, enemy, i)) {
+                        targets[n].side = enemy;
+                        targets[n].uid = b->uid[enemy][i];
+                        n++;
+                        break;
+                    }
+                }
+            }
+            for (int i = ctx->idx + 1; i < b->count[side]; i++) {
+                if (sap2_battle_targetable(b, side, i)) {
+                    targets[n].side = side;
+                    targets[n].uid = b->uid[side][i];
+                    n++;
+                    break;
+                }
+            }
+            const int amount = ab->percent
+                                   ? sap2_percent_of_attack(ab->percent, ctx->level, own_attack)
+                                   : attack;
+            sap2_battle_damage(b, ctx->rng, targets, n, amount);
+            landed = n > 0;
+            break;
+        }
+        case SAP2_SEL_LOWEST_HEALTH_ENEMY: {
+            /* Dolphin: `count` shots, each re-picking the fewest-health
+             * LIVING enemy, with the faints deferred to the end -
+             * measured, see its row. A TIE is broken at random, not by
+             * position: measured (sap/tier3_drive.py), a level-1 Dolphin
+             * facing two 9-health enemies split 28/32 over 60 seeds, and
+             * a level-3 Dolphin facing three equal enemies put all three
+             * of its shots into whichever one the first shot picked -
+             * because that one is then the lowest. Same reservoir draw
+             * the faint queue uses for ITS ties. */
+            Sap2Target hit_uids[SAP2_MAX_DAMAGE_TARGETS];
+            int nh = 0;
+            for (int shot = 0; shot < count; shot++) {
+                int t = -1;
+                int tied = 0;
+                for (int i = 0; i < b->count[enemy]; i++) {
+                    if (!sap2_battle_targetable(b, enemy, i)) {
+                        continue;
+                    }
+                    if (t < 0 || b->health[enemy][i] < b->health[enemy][t]) {
+                        t = i;
+                        tied = 1;
+                    } else if (b->health[enemy][i] == b->health[enemy][t]) {
+                        tied++;
+                        if ((int)(sap2_splitmix64(ctx->rng) % (uint64_t)tied) == 0) {
+                            t = i;
+                        }
+                    }
+                }
+                if (t < 0) {
+                    break;
+                }
+                const int taken = sap2_absorb(&b->perk[enemy][t], attack);
+                if (taken <= 0) {
+                    continue;
+                }
+                b->health[enemy][t] = (int8_t)(b->health[enemy][t] - taken);
+                hit_uids[nh].side = enemy;
+                hit_uids[nh].uid = b->uid[enemy][t];
+                nh++;
+                landed = 1;
+            }
+            for (int t = 0; t < nh; t++) {
+                const int i = sap2_battle_find(b, enemy, hit_uids[t].uid);
+                if (i < 0) {
+                    continue;
+                }
+                Sap2BattleCtx hc = {b,  ctx->rng, enemy, i, i,
+                                    b->level[enemy][i], b->perk[enemy][i], -1};
+                sap2_battle_fire(b->species[enemy][i], SAP2_PERK_NONE, SAP2_TRIG_HURT, &hc);
+            }
+            sap2_battle_cascade(b, ctx->rng);
             break;
         }
         case SAP2_SEL_RANDOM_ENEMY: {
@@ -2239,6 +3172,7 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                 targets[p].uid = b->uid[enemy][picked[p]];
             }
             sap2_battle_damage(b, ctx->rng, targets, k, attack);
+            landed = k > 0;
             break;
         }
         case SAP2_SEL_ALL_MINIONS: {
@@ -2266,6 +3200,7 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                 }
             }
             sap2_battle_damage(b, ctx->rng, targets, n, attack);
+            landed = n > 0;
             break;
         }
         case SAP2_SEL_TRIGGER_TARGET:
@@ -2273,12 +3208,14 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
              * permanent/temporary split to keep - the line is a throwaway
              * copy that is discarded when the round resolves - so the buff
              * goes straight onto the body. */
-            if (ctx->trigger_idx >= 0 && ctx->trigger_idx < b->count[side]) {
+            if (ctx->trigger_idx >= 0 && ctx->trigger_idx < b->count[side]
+                && sap2_battle_targetable(b, side, ctx->trigger_idx)) {
                 b->attack[side][ctx->trigger_idx] =
                     (int8_t)(b->attack[side][ctx->trigger_idx] + attack);
                 b->health[side][ctx->trigger_idx] =
                     (int8_t)(b->health[side][ctx->trigger_idx] + health);
                 sap2_battle_clamp(b, side, ctx->trigger_idx);
+                landed = 1;
             }
             break;
         case SAP2_SEL_SUMMON_SLOT:
@@ -2289,14 +3226,36 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
              * when that is not the summoner's, and the stats scale with
              * the summoner's level unless the row gives flat ones.
              *
-             * A second copy aims one cell further back. No pet in this
-             * roster summons more than one onto its own cell, so that
-             * spacing is an extension of the measured rule rather than
-             * itself measured. */
+             * Every copy aims at the SAME cell and pushes what is already
+             * there, exactly as Rat's Dirty Rats do onto the enemy front.
+             * Measured on Sheep's two Rams (sap/tier3_drive.py
+             * `sheep_cells`): mid-line they end in the Sheep's own cell
+             * and the one behind, with the friend that was behind pushed
+             * one further back; at the very back of the line they take
+             * the Sheep's cell and the one in FRONT instead; on a full
+             * line only the first lands. */
             for (int c = 0; c < (count > 0 ? count : 1); c++) {
-                sap2_battle_insert(b, ctx->rng, side, ctx->summon_cell - c, ab->param,
+                uint8_t summoned = ab->param;
+                if (ab->summon_tier) {
+                    /* Spider: a uniform draw over the ROLLABLE pets of
+                     * one tier, which the build holds as a
+                     * MinionCatalogueFind with no species list at all. */
+                    uint8_t pool[SAP2_NUM_SHOP_SPECIES];
+                    int n = 0;
+                    for (int sp = 1; sp <= SAP2_NUM_SHOP_SPECIES; sp++) {
+                        if (SAP2_SPECIES_TIER[sp] == ab->summon_tier) {
+                            pool[n++] = (uint8_t)sp;
+                        }
+                    }
+                    if (n == 0) {
+                        break;
+                    }
+                    summoned = pool[sap2_splitmix64(ctx->rng) % (uint64_t)n];
+                }
+                sap2_battle_insert(b, ctx->rng, side, ctx->summon_cell, summoned,
                                    (int8_t)attack, (int8_t)health,
                                    (uint8_t)(ab->level ? ab->level : ctx->level), 1);
+                landed = 1;
             }
             break;
         case SAP2_SEL_OPPONENT_FRONT:
@@ -2309,9 +3268,18 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                                    (int8_t)health,
                                    (uint8_t)(ab->level ? ab->level : 1), 0);
             }
+            landed = count > 0;
             break;
         default:
             break;
+        }
+        /* An activation only counts once something landed - the shipped
+         * build charges its TriggerLimit against the cast, not against
+         * the trigger. The body may have moved under us (a summon this
+         * very ability landed), so it is found again by id. */
+        if (ab->max_per_turn && landed && ctx->idx >= 0
+            && ctx->idx < b->count[side]) {
+            b->uses[side][ctx->idx] = (uint8_t)(b->uses[side][ctx->idx] + 1);
         }
     }
 
@@ -2468,23 +3436,44 @@ static inline int sap2_battle_ex(SAP2 *env, SapBattle2 *out) {
         const int behind1 = b.count[1] > 1 ? (int)b.uid[1][1] : -1;
         const uint8_t front0 = b.uid[0][0], front1 = b.uid[1][0];
 
-        b.health[0][0] = (int8_t)(b.health[0][0] - d1);
-        b.health[1][0] = (int8_t)(b.health[1][0] - d0);
+        /* The defender's own perk comes off the incoming amount - Garlic
+         * takes 2, Melon swallows 20 and is spent. See sap2_absorb. */
+        const int taken0 = sap2_absorb(&b.perk[0][0], d1);
+        const int taken1 = sap2_absorb(&b.perk[1][0], d0);
+        b.health[0][0] = (int8_t)(b.health[0][0] - taken0);
+        b.health[1][0] = (int8_t)(b.health[1][0] - taken1);
         const int faint0 = b.health[0][0] <= 0;
         const int faint1 = b.health[1][0] <= 0;
 
         /* Reactions first, faints after - measured: a Kangaroo behind a
-         * front that traded lethally still fires before that body leaves,
-         * and a hurt front that SURVIVED reacts before any faint resolves.
-         * A front that fainted does not react at all: survival is the
-         * whole gate on the hurt trigger. */
-        if (!faint0) {
+         * front that traded lethally still fires before that body leaves.
+         * The HURT trigger fires on whatever actually lost health,
+         * lethal or not - a Camel taken to 0 by a trade still buffs the
+         * friend behind it - and a hit a Melon swallowed whole is not a
+         * hurt at all. What a dying front loses is its eligibility as a
+         * target, which is why a Peacock that trades lethally still
+         * gains nothing. See sap2_battle_damage. */
+        if (taken0 > 0) {
             Sap2BattleCtx hc = {&b, &env->battle_rng, 0, 0, 0, b.level[0][0], b.perk[0][0], -1};
             sap2_battle_fire(b.species[0][0], SAP2_PERK_NONE, SAP2_TRIG_HURT, &hc);
         }
-        if (!faint1) {
+        if (taken1 > 0) {
             Sap2BattleCtx hc = {&b, &env->battle_rng, 1, 0, 0, b.level[1][0], b.perk[1][0], -1};
             sap2_battle_fire(b.species[1][0], SAP2_PERK_NONE, SAP2_TRIG_HURT, &hc);
+        }
+        /* And the attacker's own after-attack trigger - Elephant, which
+         * fires even when it died in this very exchange (measured,
+         * sap/tier3_drive.py): its own body is not the target, the
+         * friend behind it is. */
+        for (int side = 0; side < 2; side++) {
+            const int a = sap2_battle_find(&b, side, side == 0 ? front0 : front1);
+            if (a < 0) {
+                continue;
+            }
+            Sap2BattleCtx ac = {&b,  &env->battle_rng, side, a, a,
+                                b.level[side][a], b.perk[side][a], -1};
+            sap2_battle_fire(b.species[side][a], SAP2_PERK_NONE,
+                             SAP2_TRIG_AFTER_ATTACK, &ac);
         }
         for (int side = 0; side < 2; side++) {
             const int watcher_uid = side == 0 ? behind0 : behind1;
@@ -2613,18 +3602,23 @@ static inline int sap2_resolve_round(SAP2 *env) {
         s->ended = 0;
         s->actions_taken = 0;
         /* The new turn starts here, so every temporary buff granted
-         * during the last one expires here: Horse's, in this roster.
-         * The battle that just ran (sap2_battle, above) already read the
-         * buffed totals, which is the measured behaviour - a Horse plus
-         * a freshly bought Ant fights turn 1 as 3/2 and turns up in
-         * turn 2's shop phase as 2/2. Everything else about a pet -
-         * species, level, xp, perk, permanent stat changes - persists
-         * untouched; only the temporary components are dropped, and the
-         * permanent ones were never mixed with them, so what is left is
-         * exactly what the pet earned. */
+         * during the last one expires here: Horse's and Dog's, in this
+         * roster. The battle that just ran (sap2_battle, above) already
+         * read the buffed totals, which is the measured behaviour - a
+         * Horse plus a freshly bought Ant fights turn 1 as 3/2 and turns
+         * up in turn 2's shop phase as 2/2. Everything else about a pet -
+         * species, level, xp, perk, sell bonus, permanent stat changes -
+         * persists untouched; only the temporary components are dropped,
+         * and the permanent ones were never mixed with them, so what is
+         * left is exactly what the pet earned.
+         *
+         * The per-turn activation counters reset here too: measured on
+         * Rabbit, whose fourth food play of a turn carries no bonus and
+         * whose first play of the NEXT turn does. */
         for (int t = 0; t < SAP2_TEAM; t++) {
             s->team[t].temp_attack = 0;
             s->team[t].temp_health = 0;
+            s->team[t].uses = 0;
         }
         sap2_roll_shop(s, sap2_tier_for_turn(env->turn), pet_slots, food_slots);
         /* Start-of-turn abilities fire AFTER the roll and after the gold
@@ -2771,13 +3765,17 @@ static inline void sap2_observe(const SAP2 *env, int seat, float *out) {
          * exp sits next to the level one-hot because the real game draws
          * it as pips and it is what decides whether the next copy levels
          * the pet; the perk is a one-hot, so PERK_NONE on a live pet is a
-         * set bit and an empty slot is all zeros. */
+         * set bit and an empty slot is all zeros; the sell bonus and the
+         * activation count close out the slot - see the layout enum for
+         * why each is here. */
         if (pet->species != SAP2_SPECIES_EMPTY) {
             p[0] = (float)sap2_pet_attack(pet);
             p[1] = (float)sap2_pet_health(pet);
             p[2 + pet->level - 1] = 1.0f;
             p[2 + SAP2_MAX_LEVEL] = (float)pet->xp;
             p[2 + SAP2_MAX_LEVEL + 1 + pet->perk] = 1.0f;
+            p[2 + SAP2_MAX_LEVEL + 1 + SAP2_NUM_PERKS] = (float)pet->sell_bonus;
+            p[2 + SAP2_MAX_LEVEL + 1 + SAP2_NUM_PERKS + 1] = (float)pet->uses;
         }
         p += SAP2_TEAM_SLOT_FLOATS - SAP2_NUM_ALL_SPECIES;
     }
