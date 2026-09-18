@@ -32,8 +32,8 @@ COMBINE_BASE = 31   # +0..9: team slot pair
 
 TEAM_BASE = 4  # after gold(1) lives(1) trophies(1) turn(1)
 # A team slot: species one-hot, attack, health, level one-hot, exp, perk
-# one-hot, sell bonus, food uses. A shop pet slot: species one-hot (plus
-# empty), hp bonus, frozen.
+# one-hot, sell bonus, food uses, copied-ability one-hot. A shop pet slot:
+# species one-hot (plus empty), attack bonus, hp bonus, frozen.
 #
 # Self-contained by the rule in `bots/README.md`, so these are copied from
 # the env rather than imported - and they go STALE when a block widens,
@@ -41,18 +41,32 @@ TEAM_BASE = 4  # after gold(1) lives(1) trophies(1) turn(1)
 # silently decoding a Tier-2 layout after Tier 3 landed and its win rate
 # against `random` fell from 1804 to 1521 Elo before anyone read a number.
 # If the arena reports greedy barely beating random, check these first.
-NUM_SPECIES = 35        # SAP2_NUM_ALL_SPECIES
-TEAM_SLOT_WIDTH = 49    # SAP2_TEAM_SLOT_FLOATS
+#
+# Tier 4 widened both blocks again: a team slot gained a second
+# species-wide one-hot for Parrot's copied ability list (49 -> 148 floats)
+# and a shop pet slot gained Canned Food's attack bonus (33 -> 44).
+NUM_SPECIES = 66        # SAP2_NUM_ALL_SPECIES
+TEAM_SLOT_WIDTH = 148   # SAP2_TEAM_SLOT_FLOATS
 SHOP_PET_BASE = TEAM_BASE + 5 * TEAM_SLOT_WIDTH
-NUM_SHOP_SPECIES = 31   # SAP2_NUM_SHOP_SPECIES + 1 for the empty slot
-SHOP_PET_SLOT_WIDTH = 33  # SAP2_SHOP_PET_SLOT_FLOATS
+NUM_SHOP_SPECIES = 41   # SAP2_NUM_SHOP_SPECIES + 1 for the empty slot
+SHOP_PET_SLOT_WIDTH = 44  # SAP2_SHOP_PET_SLOT_FLOATS
 
 # From sap2.h's SAP2_BASE_ATK / SAP2_BASE_HP, indexed by species: empty,
-# the ten Tier-1 pets, Tier 2's ten, Tier 3's ten, then the tokens.
-BASE_ATK = [0, 2, 3, 1, 2, 2, 2, 2, 1, 4, 3, 4, 3, 4, 2, 2, 3, 2, 2, 1, 1,
-            6, 3, 4, 3, 4, 3, 1, 1, 1, 2, 0, 1, 1, 2]
-BASE_HP = [0, 2, 2, 3, 2, 3, 1, 2, 4, 1, 2, 1, 2, 2, 2, 5, 6, 3, 2, 2, 4,
-           3, 3, 2, 2, 3, 7, 2, 3, 2, 2, 0, 1, 1, 2]
+# the ten Tier-1 pets, Tier 2's ten, Tier 3's ten, Tier 4's ten, the
+# twenty ids reserved for Tiers 5-6 (all zero, never on a board), then the
+# five summoned tokens at 61-65.
+BASE_ATK = [0, 2, 3, 1, 2, 2, 2, 2, 1, 4, 3,
+            4, 3, 4, 2, 2, 3, 2, 2, 1, 1, 6,
+            3, 4, 3, 4, 3, 1, 1, 1, 2, 4, 3,
+            2, 4, 4, 2, 3, 3, 2, 3, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 5]
+BASE_HP = [0, 2, 2, 3, 2, 3, 1, 2, 4, 1, 2,
+           1, 2, 2, 2, 5, 6, 3, 2, 2, 4, 3,
+           3, 2, 2, 3, 7, 2, 3, 2, 2, 4, 6,
+           2, 6, 2, 3, 5, 5, 5, 7, 0, 0, 0,
+           0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+           0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 3]
 
 PAIRS = [(i, j) for i, j in combinations(range(5), 2)]
 
@@ -103,9 +117,15 @@ class Bot:
 
     @classmethod
     def _value(cls, f: np.ndarray, slot: int) -> float:
+        """Total stats the slot would arrive with. Both slot bonuses count:
+        Duck's health one and Canned Food's attack one, which Tier 4 added
+        immediately before it - reading only the first cell after the
+        one-hot would price a Canned-Food shop by its attack bonus alone."""
         species = cls._shop_species(f, slot)
-        hp_bonus = float(f[SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH + NUM_SHOP_SPECIES])
-        return BASE_ATK[species] + BASE_HP[species] + hp_bonus
+        base = SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH + NUM_SHOP_SPECIES
+        atk_bonus = float(f[base])
+        hp_bonus = float(f[base + 1])
+        return BASE_ATK[species] + BASE_HP[species] + atk_bonus + hp_bonus
 
 
 def make_bot(seed: int) -> Bot:

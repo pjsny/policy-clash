@@ -2341,6 +2341,16 @@ static inline void sap2_stack_onto(SapSeat2 *s, int target, const SapPet2 *incom
     if (a->perk == SAP2_PERK_NONE) {
         a->perk = incoming->perk;
     }
+    /* Same shape for a Parrot's copied ability list, and for the same
+     * reason: it is a property of the CARD, so the survivor keeps its own
+     * if it has one and otherwise inherits. Not separately measured - no
+     * Pack1 fixture merges two Parrots across an end of turn - but a
+     * merge is only reachable in the build phase and the copy expires at
+     * the next start of turn, so the window in which the choice is
+     * observable is one turn's battle. */
+    if (a->copied == SAP2_SPECIES_EMPTY) {
+        a->copied = incoming->copied;
+    }
     /* A merge keeps both halves of what the two cards were worth: the
      * sell bonus adds, and the per-turn activation counters do too, so
      * merging a spent Rabbit into a fresh one does not hand back its
@@ -2455,6 +2465,11 @@ static inline void sap2_insert_gap(SapSeat2 *s, int dest) {
  * case, which sap2 used to make the agent spell out as buy-then-merge. */
 static inline void sap2_buy_pet(SapSeat2 *s, int shop_slot, int dest) {
     const uint8_t species = s->shop_pets[shop_slot].species;
+    /* Both slot bonuses ride along with the buy - Duck's health and a
+     * Canned Food's +1/+1 alike. Measured (sap/tier4_drive.py
+     * `canned_food`): a Pig bought out of a shop two Canned Foods deep
+     * arrives 6/3 against its 4/1 base. */
+    const int8_t atk_bonus = s->shop_pets[shop_slot].atk_bonus;
     const int8_t hp_bonus = s->shop_pets[shop_slot].hp_bonus;
     const int stacking = sap2_buy_is_stack(s, shop_slot, dest);
 
@@ -2464,13 +2479,14 @@ static inline void sap2_buy_pet(SapSeat2 *s, int shop_slot, int dest) {
     if (stacking) {
         SapPet2 incoming;
         incoming.species = species;
-        incoming.attack = SAP2_BASE_ATK[species];
+        incoming.attack = (int8_t)(SAP2_BASE_ATK[species] + atk_bonus);
         incoming.health = (int8_t)(SAP2_BASE_HP[species] + hp_bonus);
         incoming.temp_attack = 0; /* a shop pet has no buff of its own yet */
         incoming.temp_health = 0;
         incoming.level = 1;
         incoming.xp = 0;
         incoming.perk = SAP2_PERK_NONE;
+        incoming.copied = SAP2_SPECIES_EMPTY;
         sap2_stack_onto(s, dest, &incoming);
         /* The pet that was played is the stacked one, and its on-play
          * ability fires at its new level. A stack is not a summon, so
@@ -2483,12 +2499,12 @@ static inline void sap2_buy_pet(SapSeat2 *s, int shop_slot, int dest) {
         sap2_insert_gap(s, dest);
     }
     s->team[dest].species = species;
-    s->team[dest].attack = SAP2_BASE_ATK[species];
+    s->team[dest].attack = (int8_t)(SAP2_BASE_ATK[species] + atk_bonus);
     s->team[dest].health = (int8_t)(SAP2_BASE_HP[species] + hp_bonus);
     /* A team slot is reused, not cleared, when its pet is sold or slides
      * (see sap2_sell and sap2_insert_gap), so every field of the new pet
-     * is written here - a leftover temporary buff or perk would
-     * otherwise be inherited by whoever moves in. */
+     * is written here - a leftover temporary buff, perk or copied ability
+     * list would otherwise be inherited by whoever moves in. */
     s->team[dest].temp_attack = 0;
     s->team[dest].temp_health = 0;
     s->team[dest].level = 1;
@@ -2496,6 +2512,7 @@ static inline void sap2_buy_pet(SapSeat2 *s, int shop_slot, int dest) {
     s->team[dest].perk = SAP2_PERK_NONE;
     s->team[dest].sell_bonus = 0;
     s->team[dest].uses = 0;
+    s->team[dest].copied = SAP2_SPECIES_EMPTY;
 
     sap2_fire_friend_summoned(s, dest);
     sap2_fire_on_play(s, dest);
@@ -2580,6 +2597,17 @@ static inline void sap2_reposition(SapSeat2 *s, int i, int j) {
  *                sap2_legal_for offers the play once rather than five
  *                times - see sap2_food_is_board_wide.
  *
+ *   Bread        no stat change; leaves a perk worth +7 TEMPORARY health
+ *                at every end of turn (measured, sap/tier4_drive.py
+ *                `bread_perk`) - see SAP2_PERK_ABILITY.
+ *   Canned Food  +1/+1 to the SHOP, permanently and cumulatively, and
+ *                the second food here that is played on the board rather
+ *                than on a pet - see SapSeat2.shop_atk_buff and
+ *                sap2_food_is_board_wide.
+ *   Pear         +2/+2, permanent, on the pet it is aimed at. Exactly the
+ *                Apple family's effect class at a bigger amount, so it
+ *                rides in SAP2_APPLE_BUFF rather than in its own case.
+ *
  * Whatever the food does, feeding one wakes the friends that watch for
  * it: Rabbit's trigger is the build's FoodEatenByFriendly and its target
  * is the EATER, not itself (measured, `rabbit_other_eater`). A
@@ -2592,6 +2620,23 @@ static inline void sap2_buy_food(SapSeat2 *s, int food_slot, int target) {
     sap2_shop_remove_food(s, food_slot);
 
     if (sap2_food_is_board_wide(food)) {
+        if (food == SAP2_CANNED_FOOD) {
+            /* Every shop pet standing right now, AND the seat's running
+             * total so that every later refill inherits it. Both halves
+             * are measured (sap/tier4_drive.py `canned_food`): the three
+             * pets in the shop go up at once, the next roll's pets come
+             * in already buffed, a second Canned Food makes it +2/+2, and
+             * a turn boundary does not reset it. */
+            s->shop_atk_buff = (int8_t)(s->shop_atk_buff + 1);
+            s->shop_hp_buff = (int8_t)(s->shop_hp_buff + 1);
+            for (int i = 0; i < SAP2_MAX_SHOP_PETS; i++) {
+                if (s->shop_pets[i].species != SAP2_SPECIES_EMPTY) {
+                    s->shop_pets[i].atk_bonus = (int8_t)(s->shop_pets[i].atk_bonus + 1);
+                    s->shop_pets[i].hp_bonus = (int8_t)(s->shop_pets[i].hp_bonus + 1);
+                }
+            }
+            return;
+        }
         int friends[SAP2_TEAM];
         int n = 0;
         for (int i = 0; i < SAP2_TEAM; i++) {
@@ -2611,7 +2656,8 @@ static inline void sap2_buy_food(SapSeat2 *s, int food_slot, int target) {
     switch (food) {
     case SAP2_APPLE:
     case SAP2_APPLE2:
-    case SAP2_APPLE3: {
+    case SAP2_APPLE3:
+    case SAP2_PEAR: {
         const int8_t amount = SAP2_APPLE_BUFF[food];
         p->attack = (int8_t)(p->attack + amount);
         p->health = (int8_t)(p->health + amount);
@@ -2633,6 +2679,9 @@ static inline void sap2_buy_food(SapSeat2 *s, int food_slot, int target) {
         break;
     case SAP2_BIRTHDAY_CAKE:
         p->perk = SAP2_PERK_BIRTHDAY_CAKE;
+        break;
+    case SAP2_BREAD:
+        p->perk = SAP2_PERK_BREAD;
         break;
     case SAP2_MUFFIN:
         sap2_apply_buff(p, 3, 3, SAP2_DUR_TEMP);
@@ -2742,20 +2791,101 @@ static inline void sap2_legal_for(const SapSeat2 *s, int pet_slots, uint8_t *out
     }
 }
 
+/* The order a whole-board trigger visits a seat's pets in: highest TOTAL
+ * attack first, ties broken by the same reservoir coin flip the battle
+ * queues use. Writes the occupied slots into `out` and returns how many.
+ *
+ * Both turn boundaries use it. Start of turn was measured first (Swan and
+ * Worm, three Apples into one of the pair flipping which fires); end of
+ * turn was measured for Tier 4, because Tier 1-3's end-of-turn abilities
+ * are all order-blind and could not tell positional order from this one.
+ * Bison's TypeLimit made it visible (sap/tier4_drive.py `end_turn_order`):
+ * with two Bisons of EQUAL attack the winner splits 11/9 over twenty
+ * seeds and with three it splits 9/6/5, so ties really are random; and
+ * with two Parrots of UNEQUAL attack the 6-attack one copies first in
+ * both board arrangements, which the chained copy makes readable - the
+ * one that goes second copies a list the first has already replaced.
+ * Board position decides nothing at either boundary.
+ *
+ * Every occupied slot is ordered, not just the listeners, which is what
+ * the shipped build's TriggerMinions does - it fans the event out over
+ * the board and asks each body in turn. The tie-break draws are taken
+ * here for the same reason: the order is a property of the board, not of
+ * who happens to be listening. */
+static inline int sap2_order_by_attack(SapSeat2 *s, int *out) {
+    int n = 0;
+    for (int t = 0; t < SAP2_TEAM; t++) {
+        if (s->team[t].species != SAP2_SPECIES_EMPTY) {
+            out[n++] = t;
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        int pick = i;
+        int tied = 1;
+        for (int j = i + 1; j < n; j++) {
+            const int8_t aj = sap2_pet_attack(&s->team[out[j]]);
+            const int8_t ap = sap2_pet_attack(&s->team[out[pick]]);
+            if (aj > ap) {
+                pick = j;
+                tied = 1;
+            } else if (aj == ap) {
+                tied++;
+                if ((int)(sap2_splitmix64(&s->rng) % (uint64_t)tied) == 0) {
+                    pick = j;
+                }
+            }
+        }
+        const int tmp = out[i];
+        out[i] = out[pick];
+        out[pick] = tmp;
+    }
+    return n;
+}
+
 /* End-of-turn abilities fire when this seat's build phase closes, on
  * either path out of it: the explicit END_TURN action, or the action
- * budget running out. Snail is the species case here, and its condition
- * means nothing fires on a round the seat did not lose; Birthday Cake is
- * the PERK case, and it fires unconditionally, every turn, for as long
- * as the cake is on the pet. */
+ * budget running out. Snail is the species case from Tier 2, and its
+ * condition means nothing fires on a round the seat did not lose; Bison
+ * and Parrot are Tier 4's; Birthday Cake and Bread are the PERK cases,
+ * and both fire unconditionally, every turn, for as long as the perk is
+ * on the pet.
+ *
+ * A row with `type_limit` set fires for at most ONE pet of its species -
+ * Bison, the only TypeLimit in the Pack1 roster. Measured
+ * (sap/tier4_drive.py `bison_type_limit`): three level-1 Bisons behind a
+ * level-3 friend produce exactly one +2/+2, and which Bison gets it is
+ * decided by the queue above and nothing else - feed one of two a Pear
+ * and the 6-attack one wins from either board position, leave them equal
+ * and it is a coin flip. The limit is per EVENT, so the next end of turn
+ * lets one through again, cumulatively (4/4 -> 6/6 -> 8/8). */
 static inline void sap2_fire_end_turn(SapSeat2 *s) {
-    for (int t = 0; t < SAP2_TEAM; t++) {
+    int order[SAP2_TEAM];
+    const int n = sap2_order_by_attack(s, order);
+    uint8_t spent[SAP2_NUM_ALL_SPECIES];
+    memset(spent, 0, sizeof(spent));
+
+    for (int i = 0; i < n; i++) {
+        const int t = order[i];
         if (s->team[t].species == SAP2_SPECIES_EMPTY) {
             continue;
         }
+        const uint8_t abilities = sap2_pet_abilities(&s->team[t]);
+        int limited = 0;
+        for (int slot = 0; slot < SAP2_MAX_ABILITIES; slot++) {
+            const Sap2Ability *ab = &SAP2_ABILITY[abilities][slot];
+            if (ab->trigger == SAP2_TRIG_END_TURN && ab->type_limit) {
+                limited = 1;
+            }
+        }
+        if (limited && spent[abilities]) {
+            continue;
+        }
         Sap2Ctx ctx = {s, t, t, s->team[t].level};
-        sap2_fire(s->team[t].species, SAP2_TRIG_END_TURN, &ctx);
+        sap2_fire(abilities, SAP2_TRIG_END_TURN, &ctx);
         sap2_fire_perk(s->team[t].perk, SAP2_TRIG_END_TURN, &ctx);
+        if (limited) {
+            spent[abilities] = 1;
+        }
     }
 }
 
@@ -2834,9 +2964,32 @@ typedef struct {
     /* Activations a per-turn-capped ability has already spent, carried
      * over from the pet (SapPet2.uses) so that the cap really is per
      * TURN and not per phase: an Ox that already reacted to a Pilled
-     * friend in the shop arrives with one spent. Ox is the only battle
-     * case in this roster. */
+     * friend in the shop arrives with one spent. Ox is the only
+     * per-TURN battle case in this roster. */
     uint8_t uses[2][SAP2_TEAM];
+    /* And the per-BATTLE counter, which is a different scope and so a
+     * different field: it starts at zero here no matter what the pet did
+     * in the shop, which is exactly what makes Hippo's three kills three
+     * per battle. Measured, including that it resets between two battles
+     * on the same spec - see Sap2Ability.max_per_battle. */
+    uint8_t battle_uses[2][SAP2_TEAM];
+    /* The species whose ability rows this body runs, or 0 for its own -
+     * SapPet2.copied carried across. Parrot's copy is set at the end of
+     * the build phase and is live for exactly this battle, so the line
+     * has to carry it; sap2_battle_abilities is the battle-side half of
+     * sap2_pet_abilities, and the one point this side of the file
+     * resolves species -> ability table. */
+    uint8_t copied[2][SAP2_TEAM];
+    /* What this body has SWALLOWED, and the stats it swallowed it at -
+     * Whale, the first per-body captured state in this file. Species 0
+     * means nothing, which is why a Whale that swallowed nothing releases
+     * nothing (measured). The stats are the victim's as they stood at the
+     * swallow rather than its base row: a 4/9 Beaver comes back 4/9. The
+     * victim's LEVEL is deliberately not stored - the release is at the
+     * WHALE's level, measured, so ctx->level already has the right one. */
+    uint8_t swallowed[2][SAP2_TEAM];
+    int8_t swallowed_atk[2][SAP2_TEAM];
+    int8_t swallowed_hp[2][SAP2_TEAM];
     int count[2];
     /* The GRID CELL each body occupies, nearer the front the higher, kept
      * alongside the packed order rather than derived from it. The shipped
@@ -2882,6 +3035,10 @@ static inline void sap2_battle_load(SapBattle2 *b, const SapSeat2 *s, int side) 
         b->level[side][n] = s->team[i].level;
         b->perk[side][n] = s->team[i].perk;
         b->uses[side][n] = s->team[i].uses;
+        b->copied[side][n] = s->team[i].copied;
+        /* battle_uses and the swallow memory are left at the zero
+         * sap2_battle_ex memsets the whole line to: both are per-battle
+         * by construction, which is the whole distinction from `uses`. */
         b->uid[side][n] = (uint8_t)n;
         b->cell[side][n] = (uint8_t)(SAP2_TEAM - 1 - n);
         n++;
@@ -2899,12 +3056,23 @@ static inline void sap2_battle_remove(SapBattle2 *b, int side, int idx) {
         b->perk[side][i] = b->perk[side][i + 1];
         b->uid[side][i] = b->uid[side][i + 1];
         b->uses[side][i] = b->uses[side][i + 1];
+        b->battle_uses[side][i] = b->battle_uses[side][i + 1];
+        b->copied[side][i] = b->copied[side][i + 1];
+        b->swallowed[side][i] = b->swallowed[side][i + 1];
+        b->swallowed_atk[side][i] = b->swallowed_atk[side][i + 1];
+        b->swallowed_hp[side][i] = b->swallowed_hp[side][i + 1];
         /* The survivors KEEP their cells: the shipped build leaves the
          * hole a body left behind until its next EmptyFront, and a summon
          * fired by that body's own death aims at exactly that hole. */
         b->cell[side][i] = b->cell[side][i + 1];
     }
     b->count[side]--;
+}
+
+/* The battle-side half of sap2_pet_abilities: which species' rows this
+ * body runs. See SapBattle2.copied. */
+static inline uint8_t sap2_battle_abilities(const SapBattle2 *b, int side, int i) {
+    return b->copied[side][i] ? b->copied[side][i] : b->species[side][i];
 }
 
 /* Compacts a side to the front - the shipped build's EmptyFront/PhaseMove,
@@ -2944,13 +3112,22 @@ static inline void sap2_battle_compact(SapBattle2 *b, int side) {
  * (Horse), while Rat's Dirty Rats carry TriggerDisabled = true and wake
  * nothing on the side they land on - measured via sap/ability_check.py.
  * WHICH friends care is the table's business; this only says whether the
- * trigger happens at all. */
+ * trigger happens at all.
+ *
+ * `perk` is what the arriving body is WEARING. Almost everything summoned
+ * in this roster arrives bare, but Deer's Bus does not: its perk comes
+ * off the summon's own EffectSummonProcessor rather than off a spell
+ * played on the body, so it is a property of the insert and not of a
+ * later trigger - measured (sap/tier4_drive.py `deer_bus`), the only
+ * events a Deer's death produces are its Death and the Summon, and the
+ * Bus is standing there wearing Chili. Passing it in here rather than
+ * writing it afterwards is what keeps it off the perk-gained bus. */
 static inline void sap2_battle_fire_watchers(SapBattle2 *b, uint64_t *rng, int side,
                                               int trigger, int trigger_idx);
 
 static inline void sap2_battle_insert(SapBattle2 *b, uint64_t *rng, int side, int target,
                                        uint8_t species, int8_t atk, int8_t hp,
-                                       uint8_t level, int fire_summon) {
+                                       uint8_t level, uint8_t perk, int fire_summon) {
     if (b->count[side] >= SAP2_TEAM) {
         return; /* a full line takes nothing - measured, order_probe 5a */
     }
@@ -3000,6 +3177,10 @@ static inline void sap2_battle_insert(SapBattle2 *b, uint64_t *rng, int side, in
             }
         }
     }
+    /* Every per-body field moves, not just the ones a Tier-1 token had:
+     * the whole row is the body's identity, and an insert that forgot one
+     * would hand a shifted neighbour someone else's Hippo counter or
+     * someone else's swallowed Beaver. */
     for (int i = b->count[side]; i > at; i--) {
         b->attack[side][i] = b->attack[side][i - 1];
         b->health[side][i] = b->health[side][i - 1];
@@ -3008,14 +3189,28 @@ static inline void sap2_battle_insert(SapBattle2 *b, uint64_t *rng, int side, in
         b->perk[side][i] = b->perk[side][i - 1];
         b->uid[side][i] = b->uid[side][i - 1];
         b->uses[side][i] = b->uses[side][i - 1];
+        b->battle_uses[side][i] = b->battle_uses[side][i - 1];
+        b->copied[side][i] = b->copied[side][i - 1];
+        b->swallowed[side][i] = b->swallowed[side][i - 1];
+        b->swallowed_atk[side][i] = b->swallowed_atk[side][i - 1];
+        b->swallowed_hp[side][i] = b->swallowed_hp[side][i - 1];
         b->cell[side][i] = b->cell[side][i - 1];
     }
     b->attack[side][at] = atk;
     b->health[side][at] = hp;
     b->species[side][at] = species;
     b->level[side][at] = level;
-    b->perk[side][at] = SAP2_PERK_NONE; /* a summoned token carries no perk */
+    b->perk[side][at] = perk;
     b->uses[side][at] = 0;
+    /* A summoned body is new: it has spent no per-battle activation, runs
+     * its OWN ability rows (a Parrot's copy is a property of the card that
+     * bought it, and nothing summons a Parrot), and has swallowed
+     * nothing - a released Beaver cannot re-release itself. */
+    b->battle_uses[side][at] = 0;
+    b->copied[side][at] = SAP2_SPECIES_EMPTY;
+    b->swallowed[side][at] = SAP2_SPECIES_EMPTY;
+    b->swallowed_atk[side][at] = 0;
+    b->swallowed_hp[side][at] = 0;
     b->uid[side][at] = b->next_uid[side]++;
     b->cell[side][at] = (uint8_t)target;
     b->count[side]++;
@@ -3056,7 +3251,41 @@ typedef struct {
      * which is not already the front is Hedgehog's splash, and that always
      * goes through sap2_battle_cascade. */
     int summon_cell;
+    /* And what the firing body had SWALLOWED, for the same reason and
+     * from the same place: Whale's release is a DEATH row, so by the time
+     * it runs the Whale is off the line and its memory with it. The
+     * cascade copies it here while the body is still standing. Species 0
+     * means nothing was swallowed, which is a real case - measured
+     * (sap/tier4_drive.py `whale_cases`), a Whale that swallowed nothing
+     * fires WhaleAbilityExtra and summons nothing. */
+    uint8_t swallowed;
+    int8_t swallowed_atk;
+    int8_t swallowed_hp;
 } Sap2BattleCtx;
+
+/* Every battle-phase trigger fires against one of these, and the field
+ * list has grown once per tier. A constructor rather than a positional
+ * brace list at each of the eleven sites: -Wextra makes a short list an
+ * error, so appending a field would otherwise mean editing all eleven,
+ * and the two fields a caller really does vary - the summon cell and the
+ * swallow memory - are set by name afterwards by the one caller (the
+ * cascade) that has anything to say about them. */
+static inline Sap2BattleCtx sap2_battle_ctx(SapBattle2 *b, uint64_t *rng, int side, int idx,
+                                             int trigger_idx, int level, uint8_t perk) {
+    Sap2BattleCtx ctx;
+    ctx.b = b;
+    ctx.rng = rng;
+    ctx.side = side;
+    ctx.idx = idx;
+    ctx.trigger_idx = trigger_idx;
+    ctx.level = level;
+    ctx.perk = perk;
+    ctx.summon_cell = -1;
+    ctx.swallowed = SAP2_SPECIES_EMPTY;
+    ctx.swallowed_atk = 0;
+    ctx.swallowed_hp = 0;
+    return ctx;
+}
 
 static inline void sap2_battle_clamp(SapBattle2 *b, int side, int i) {
     if (b->attack[side][i] > SAP2_MAX_STATS) {
@@ -3143,6 +3372,11 @@ typedef struct {
      * standing: a summon fired by its DEATH aims there, and by then the
      * body - and possibly the ones around it - have left. */
     uint8_t cell[SAP2_MAX_CASCADE];
+    /* Same for the swallow memory, and for the same reason: Whale's
+     * release reads it from a DEATH row, after the Whale has left. */
+    uint8_t swallowed[SAP2_MAX_CASCADE];
+    int8_t swallowed_atk[SAP2_MAX_CASCADE];
+    int8_t swallowed_hp[SAP2_MAX_CASCADE];
     int n;
 } Sap2Cascade;
 
@@ -3222,12 +3456,23 @@ static inline void sap2_battle_cascade(SapBattle2 *b, uint64_t *rng) {
         }
         const int slot = c.n++;
         c.who[slot] = next;
-        c.species[slot] = b->species[next.side][idx];
+        /* The EFFECTIVE species, so that a Parrot carrying a Cricket's
+         * list leaves a token when it dies - measured
+         * (sap/tier4_drive.py `parrot_in_battle`): a Parrot that copied
+         * CricketAbility took the enemy's 30-health Beaver to 23 rather
+         * than 24, which is the token's extra exchange. */
+        c.species[slot] = sap2_battle_abilities(b, next.side, idx);
         c.perk[slot] = b->perk[next.side][idx];
         c.level[slot] = b->level[next.side][idx];
+        /* And whatever this body had swallowed, while it is still here to
+         * ask: the release is a DEATH row and the body will be gone by
+         * then. See Sap2BattleCtx.swallowed. */
+        c.swallowed[slot] = b->swallowed[next.side][idx];
+        c.swallowed_atk[slot] = b->swallowed_atk[next.side][idx];
+        c.swallowed_hp[slot] = b->swallowed_hp[next.side][idx];
 
-        Sap2BattleCtx ctx = {b,   rng, next.side,     idx,
-                             idx, c.level[slot], c.perk[slot], -1};
+        Sap2BattleCtx ctx = sap2_battle_ctx(b, rng, next.side, idx, idx,
+                                            c.level[slot], c.perk[slot]);
         sap2_battle_fire(c.species[slot], c.perk[slot], SAP2_TRIG_BEFORE_DEATH, &ctx);
         /* In the same window, the body in the CELL directly behind this
          * one reacts to the faint ahead of it - Ox. The cell, not the
@@ -3245,9 +3490,10 @@ static inline void sap2_battle_cascade(SapBattle2 *b, uint64_t *rng) {
                 if (b->cell[next.side][w] != (uint8_t)(cell - 1)) {
                     continue;
                 }
-                Sap2BattleCtx wc = {b, rng, next.side, w, dying,
-                                    b->level[next.side][w], b->perk[next.side][w], -1};
-                sap2_battle_fire(b->species[next.side][w], SAP2_PERK_NONE,
+                Sap2BattleCtx wc = sap2_battle_ctx(b, rng, next.side, w, dying,
+                                                   b->level[next.side][w],
+                                                   b->perk[next.side][w]);
+                sap2_battle_fire(sap2_battle_abilities(b, next.side, w), SAP2_PERK_NONE,
                                  SAP2_TRIG_FRIEND_AHEAD_FAINTED, &wc);
                 break;
             }
@@ -3270,8 +3516,12 @@ static inline void sap2_battle_cascade(SapBattle2 *b, uint64_t *rng) {
         }
     }
     for (int t = 0; t < c.n; t++) {
-        Sap2BattleCtx ctx = {b,   rng,         c.who[t].side, -1,
-                             -1,  c.level[t],  c.perk[t],     (int)c.cell[t]};
+        Sap2BattleCtx ctx = sap2_battle_ctx(b, rng, c.who[t].side, -1, -1,
+                                            c.level[t], c.perk[t]);
+        ctx.summon_cell = (int)c.cell[t];
+        ctx.swallowed = c.swallowed[t];
+        ctx.swallowed_atk = c.swallowed_atk[t];
+        ctx.swallowed_hp = c.swallowed_hp[t];
         sap2_battle_fire(c.species[t], c.perk[t], SAP2_TRIG_DEATH, &ctx);
     }
     b->cascading = 0;
@@ -3361,9 +3611,11 @@ static inline void sap2_battle_damage(SapBattle2 *b, uint64_t *rng, const Sap2Ta
         if (idx < 0) {
             continue;
         }
-        Sap2BattleCtx ctx = {b, rng, hurt[t].side, idx, idx, b->level[hurt[t].side][idx],
-                             b->perk[hurt[t].side][idx], -1};
-        sap2_battle_fire(b->species[hurt[t].side][idx], SAP2_PERK_NONE, SAP2_TRIG_HURT, &ctx);
+        Sap2BattleCtx ctx = sap2_battle_ctx(b, rng, hurt[t].side, idx, idx,
+                                            b->level[hurt[t].side][idx],
+                                            b->perk[hurt[t].side][idx]);
+        sap2_battle_fire(sap2_battle_abilities(b, hurt[t].side, idx), SAP2_PERK_NONE,
+                         SAP2_TRIG_HURT, &ctx);
     }
 
     sap2_battle_cascade(b, rng);
@@ -3378,9 +3630,9 @@ static inline void sap2_battle_fire_watchers(SapBattle2 *b, uint64_t *rng, int s
         if (i == trigger_idx) {
             continue;
         }
-        Sap2BattleCtx ctx = {b,   rng, side, i, trigger_idx, b->level[side][i],
-                             b->perk[side][i], -1};
-        sap2_battle_fire(b->species[side][i], SAP2_PERK_NONE, trigger, &ctx);
+        Sap2BattleCtx ctx = sap2_battle_ctx(b, rng, side, i, trigger_idx,
+                                            b->level[side][i], b->perk[side][i]);
+        sap2_battle_fire(sap2_battle_abilities(b, side, i), SAP2_PERK_NONE, trigger, &ctx);
     }
 }
 
@@ -3420,6 +3672,19 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
          * SapBattle2.uses. */
         if (ab->max_per_turn && ctx->idx >= 0
             && b->uses[side][ctx->idx] >= (uint8_t)sap2_amount(ab->max_per_turn, ctx->level)) {
+            continue;
+        }
+        /* And the per-BATTLE one, carried on the LINE so that it starts at
+         * zero every battle however busy the pet's shop phase was - Hippo.
+         * Measured through the resolver's own battle loop rather than
+         * through poked events (sap/tier4_drive.py `hippo_fight_limit`): a
+         * level-1 Hippo 9/40 ends 12/43, 15/46, 18/49 against one, two and
+         * three 1-health enemies and then 18/49 against four, five and
+         * six, and two battles on the same spec both end 18/49. The poked
+         * path does NOT enforce it (`hippo_battle_limit`), which is why
+         * this counter exists here and not on the pet. */
+        if (ab->max_per_battle && ctx->idx >= 0
+            && b->battle_uses[side][ctx->idx] >= (uint8_t)ab->max_per_battle) {
             continue;
         }
         const int attack = sap2_amount(ab->attack, ctx->level);
@@ -3483,9 +3748,20 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
             int friends[SAP2_TEAM];
             int n = 0;
             for (int i = 0; i < b->count[side]; i++) {
-                if (i != ctx->idx && sap2_battle_targetable(b, side, i)) {
-                    friends[n++] = i;
+                if (i == ctx->idx || !sap2_battle_targetable(b, side, i)) {
+                    continue;
                 }
+                /* Penguin's level gate, the same filter the seat side
+                 * applies. No Pack1 ability reaches it from here - the
+                 * only row that carries min_level triggers on StartTurn,
+                 * and a Parrot cannot copy it into a battle because the
+                 * copy is taken at the END of a turn - but the finder is
+                 * one mechanism in the shipped build and splitting it
+                 * across the two containers is how the pair drifts. */
+                if (ab->min_level && b->level[side][i] < ab->min_level) {
+                    continue;
+                }
+                friends[n++] = i;
             }
             int picked[SAP2_TEAM];
             const int k = sap2_pick_random(ctx->rng, friends, n, count, picked);
@@ -3513,6 +3789,79 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                 break;
             }
             const int step = ab->selector == SAP2_SEL_FRIENDS_AHEAD ? -1 : 1;
+            if (ab->effect == SAP2_EFF_GIVE_PERK) {
+                /* Turtle: the Melon perk and nothing else onto the
+                 * LEVEL-many nearest friends behind, stepping over a body
+                 * that is itself mid-faint. Measured
+                 * (sap/tier4_drive.py `turtle_behind`): a level-2 Turtle
+                 * whose nearer friend was dying in the same blast perked
+                 * the two LIVING friends past it, and with nothing behind
+                 * it the ability does not fire at all. Each landing wakes
+                 * the perk-gained bus, exactly as Ox's Melon does - a
+                 * Rabbit handed one gained its health on top.
+                 *
+                 * The targets are taken as ids and then perked one at a
+                 * time: the bus can move the line under a positional
+                 * walk, and the seat side hands the perks out
+                 * interleaved with the bus the same way. */
+                uint8_t perked[SAP2_TEAM];
+                int np = 0;
+                for (int i = ctx->idx + step; i >= 0 && i < b->count[side] && np < count;
+                     i += step) {
+                    if (sap2_battle_targetable(b, side, i)) {
+                        perked[np++] = b->uid[side][i];
+                    }
+                }
+                for (int p = 0; p < np; p++) {
+                    const int i = sap2_battle_find(b, side, perked[p]);
+                    if (i < 0) {
+                        continue;
+                    }
+                    b->perk[side][i] = ab->grant_perk;
+                    sap2_battle_fire_watchers(b, ctx->rng, side, SAP2_TRIG_EAT_FOOD, i);
+                }
+                landed = np > 0;
+                break;
+            }
+            if (ab->effect == SAP2_EFF_SWALLOW) {
+                /* Whale, at the start of a battle: the nearest LIVING
+                 * friend ahead is remembered - species and the stats it
+                 * stands at, not its base row, so a buffed 4/9 Beaver
+                 * comes back 4/9 - and then DESTROYED with its own faint
+                 * triggers running. Measured (`whale_cases`,
+                 * `whale_swallow_cell`): a swallowed Cricket produces
+                 * BeforeDeath, Death, CricketAbility and a Summon, and
+                 * the token lands in the CRICKET's vacated cell, which is
+                 * exactly what handing the body to the cascade does.
+                 *
+                 * Not damage: no absorb, no hurt trigger, no Melon in the
+                 * way - the health is simply written to 0, which is what
+                 * makes a shielded victim go down all the same. And the
+                 * victim's LEVEL is not remembered: the release is at the
+                 * WHALE's level (measured - a level-3 Beaver swallowed by
+                 * a level-1 Whale comes back at level 1).
+                 *
+                 * The memory is written BEFORE the cascade, while the
+                 * indices still mean what they meant: resolving the
+                 * victim shifts the Whale's own index down. */
+                int t = -1;
+                for (int i = ctx->idx + step; i >= 0 && i < b->count[side]; i += step) {
+                    if (sap2_battle_targetable(b, side, i)) {
+                        t = i;
+                        break;
+                    }
+                }
+                if (t < 0) {
+                    break; /* nothing ahead - the ability does not fire */
+                }
+                b->swallowed[side][ctx->idx] = b->species[side][t];
+                b->swallowed_atk[side][ctx->idx] = b->attack[side][t];
+                b->swallowed_hp[side][ctx->idx] = b->health[side][t];
+                b->health[side][t] = 0;
+                sap2_battle_cascade(b, ctx->rng);
+                landed = 1;
+                break;
+            }
             if (ab->effect == SAP2_EFF_DAMAGE) {
                 /* Every shot lands before any faint resolves - measured
                  * on a level-3 Elephant over a 1/2 Cricket, whose token
@@ -3547,9 +3896,9 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                     if (i < 0) {
                         continue;
                     }
-                    Sap2BattleCtx hc = {b,  ctx->rng, side, i, i,
-                                        b->level[side][i], b->perk[side][i], -1};
-                    sap2_battle_fire(b->species[side][i], SAP2_PERK_NONE,
+                    Sap2BattleCtx hc = sap2_battle_ctx(b, ctx->rng, side, i, i,
+                                                       b->level[side][i], b->perk[side][i]);
+                    sap2_battle_fire(sap2_battle_abilities(b, side, i), SAP2_PERK_NONE,
                                      SAP2_TRIG_HURT, &hc);
                 }
                 sap2_battle_cascade(b, ctx->rng);
@@ -3684,11 +4033,50 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                 if (i < 0) {
                     continue;
                 }
-                Sap2BattleCtx hc = {b,  ctx->rng, enemy, i, i,
-                                    b->level[enemy][i], b->perk[enemy][i], -1};
-                sap2_battle_fire(b->species[enemy][i], SAP2_PERK_NONE, SAP2_TRIG_HURT, &hc);
+                Sap2BattleCtx hc = sap2_battle_ctx(b, ctx->rng, enemy, i, i,
+                                                   b->level[enemy][i], b->perk[enemy][i]);
+                sap2_battle_fire(sap2_battle_abilities(b, enemy, i), SAP2_PERK_NONE,
+                                 SAP2_TRIG_HURT, &hc);
             }
             sap2_battle_cascade(b, ctx->rng);
+            break;
+        }
+        case SAP2_SEL_HIGHEST_HEALTH_ENEMY: {
+            /* Skunk, and the only SET_HEALTH in the file. It finds the
+             * most-health living enemy, a tie going to a random one
+             * (measured, `skunk_highest`: against 9, 30 and 20 it takes
+             * the 30, and two equal 30s split 8/12 over twenty seeds -
+             * the same reservoir draw Dolphin's ties use), and then SETS
+             * that health rather than subtracting anything.
+             *
+             * Everything that makes damage damage is therefore absent,
+             * and all four halves are measured (`skunk_not_damage`): a
+             * Melon and a Garlic both leave the full effect and stay on
+             * the pet, there is no Hurt event so a Peacock target gains
+             * nothing, and a 1-health enemy at level 3 stays at 1 with no
+             * Death - so no cascade is started here, because nothing here
+             * can ever start one. See sap2_skunk_health for the floor. */
+            int t = -1;
+            int tied = 0;
+            for (int i = 0; i < b->count[enemy]; i++) {
+                if (!sap2_battle_targetable(b, enemy, i)) {
+                    continue;
+                }
+                if (t < 0 || b->health[enemy][i] > b->health[enemy][t]) {
+                    t = i;
+                    tied = 1;
+                } else if (b->health[enemy][i] == b->health[enemy][t]) {
+                    tied++;
+                    if ((int)(sap2_splitmix64(ctx->rng) % (uint64_t)tied) == 0) {
+                        t = i;
+                    }
+                }
+            }
+            if (t < 0) {
+                break;
+            }
+            b->health[enemy][t] = (int8_t)sap2_skunk_health(b->health[enemy][t], ctx->level);
+            landed = 1;
             break;
         }
         case SAP2_SEL_RANDOM_ENEMY: {
@@ -3787,6 +4175,27 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
              * one further back; at the very back of the line they take
              * the Sheep's cell and the one in FRONT instead; on a full
              * line only the first lands. */
+            if (ab->from_memory) {
+                /* Whale's release: the species and the stats come off the
+                 * swallow memory the cascade carried here, and the level
+                 * and the cell come from the WHALE - ctx->level and
+                 * ctx->summon_cell. Measured (`whale_cases`,
+                 * `whale_swallow_cell`): a 4/9 Beaver comes back 4/9 at
+                 * every Whale level, a level-3 Beaver swallowed by a
+                 * level-1 Whale comes back at level 1, a swallowed Melon
+                 * does not come back, a line that is full at the moment
+                 * of release still takes it because the Whale's own cell
+                 * is the room, and a Whale that swallowed nothing summons
+                 * nothing at all. */
+                if (ctx->swallowed == SAP2_SPECIES_EMPTY) {
+                    break;
+                }
+                sap2_battle_insert(b, ctx->rng, side, ctx->summon_cell, ctx->swallowed,
+                                   ctx->swallowed_atk, ctx->swallowed_hp,
+                                   (uint8_t)ctx->level, SAP2_PERK_NONE, 1);
+                landed = 1;
+                break;
+            }
             for (int c = 0; c < (count > 0 ? count : 1); c++) {
                 uint8_t summoned = ab->param;
                 if (ab->summon_tier) {
@@ -3805,9 +4214,15 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
                     }
                     summoned = pool[sap2_splitmix64(ctx->rng) % (uint64_t)n];
                 }
+                /* A summon can arrive already WEARING a perk - Deer's Bus
+                 * and its Chili, which comes off the effect's own summon
+                 * processor rather than off a spell played on the body, so
+                 * it wakes nothing (measured, `deer_bus`: the only events
+                 * are the Deer's Death and the Summon). */
                 sap2_battle_insert(b, ctx->rng, side, ctx->summon_cell, summoned,
                                    (int8_t)attack, (int8_t)health,
-                                   (uint8_t)(ab->level ? ab->level : ctx->level), 1);
+                                   (uint8_t)(ab->level ? ab->level : ctx->level),
+                                   ab->grant_perk, 1);
                 landed = 1;
             }
             break;
@@ -3819,7 +4234,7 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
             for (int c = 0; c < count; c++) {
                 sap2_battle_insert(b, ctx->rng, enemy, SAP2_TEAM - 1, ab->param, (int8_t)attack,
                                    (int8_t)health,
-                                   (uint8_t)(ab->level ? ab->level : 1), 0);
+                                   (uint8_t)(ab->level ? ab->level : 1), SAP2_PERK_NONE, 0);
             }
             landed = count > 0;
             break;
@@ -3830,9 +4245,14 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
          * build charges its TriggerLimit against the cast, not against
          * the trigger. The body may have moved under us (a summon this
          * very ability landed), so it is found again by id. */
-        if (ab->max_per_turn && landed && ctx->idx >= 0
-            && ctx->idx < b->count[side]) {
-            b->uses[side][ctx->idx] = (uint8_t)(b->uses[side][ctx->idx] + 1);
+        if (landed && ctx->idx >= 0 && ctx->idx < b->count[side]) {
+            if (ab->max_per_turn) {
+                b->uses[side][ctx->idx] = (uint8_t)(b->uses[side][ctx->idx] + 1);
+            }
+            if (ab->max_per_battle) {
+                b->battle_uses[side][ctx->idx] =
+                    (uint8_t)(b->battle_uses[side][ctx->idx] + 1);
+            }
         }
     }
 
@@ -3841,7 +4261,7 @@ static inline void sap2_battle_fire(uint8_t species, uint8_t perk, int trigger,
         const Sap2Ability *pa = &SAP2_PERK_ABILITY[perk];
         if (pa->trigger == trigger && pa->effect == SAP2_EFF_SUMMON) {
             sap2_battle_insert(b, ctx->rng, side, ctx->summon_cell, pa->param, pa->attack,
-                               pa->health, 1, 1);
+                               pa->health, 1, SAP2_PERK_NONE, 1);
         }
     }
 }
@@ -3869,9 +4289,15 @@ static inline void sap2_battle_start(SapBattle2 *b, uint64_t *rng) {
     int qn = 0;
     for (int side = 0; side < 2; side++) {
         for (int i = 0; i < b->count[side]; i++) {
+            /* The EFFECTIVE species, so a Parrot that copied a Mosquito
+             * both joins this queue and fires the Mosquito's shot from it.
+             * Measured (sap/tier4_drive.py `parrot_in_battle`): a
+             * Mosquito one cell ahead of a level-2 Parrot put THREE shots
+             * into the battle, the Mosquito's one and the Parrot's two. */
+            const uint8_t abilities = sap2_battle_abilities(b, side, i);
             int listens = 0;
             for (int slot = 0; slot < SAP2_MAX_ABILITIES; slot++) {
-                if (SAP2_ABILITY[b->species[side][i]][slot].trigger == SAP2_TRIG_START_BATTLE) {
+                if (SAP2_ABILITY[abilities][slot].trigger == SAP2_TRIG_START_BATTLE) {
                     listens = 1;
                 }
             }
@@ -3880,7 +4306,7 @@ static inline void sap2_battle_start(SapBattle2 *b, uint64_t *rng) {
             }
             q_side[qn] = side;
             q_level[qn] = b->level[side][i];
-            q_species[qn] = b->species[side][i];
+            q_species[qn] = abilities;
             q_perk[qn] = b->perk[side][i];
             q_atk[qn] = b->attack[side][i];
             q_uid[qn] = b->uid[side][i];
@@ -3935,7 +4361,8 @@ static inline void sap2_battle_start(SapBattle2 *b, uint64_t *rng) {
          * ability firing here would belong to the queue entry, not to
          * this trigger. */
         const int idx = sap2_battle_find(b, q_side[t], q_uid[t]);
-        Sap2BattleCtx ctx = {b, rng, q_side[t], idx, idx, q_level[t], q_perk[t], -1};
+        Sap2BattleCtx ctx = sap2_battle_ctx(b, rng, q_side[t], idx, idx,
+                                            q_level[t], q_perk[t]);
         sap2_battle_fire(q_species[t], SAP2_PERK_NONE, SAP2_TRIG_START_BATTLE, &ctx);
     }
 }
@@ -3988,6 +4415,15 @@ static inline int sap2_battle_ex(SAP2 *env, SapBattle2 *out) {
         const int behind0 = b.count[0] > 1 ? (int)b.uid[0][1] : -1;
         const int behind1 = b.count[1] > 1 ? (int)b.uid[1][1] : -1;
         const uint8_t front0 = b.uid[0][0], front1 = b.uid[1][0];
+        /* Chili's splash target, which is the body one cell behind the
+         * DEFENDER - so for side 0's wearer it is the other side's
+         * `behind`, and -1 when the defender stands alone. Read here, off
+         * the perk each front is wearing before any absorb can spend a
+         * Melon, and resolved by id below: a splash can land after the
+         * line has shifted. See SAP2_CHILI_SPLASH for the five measured
+         * facts this implements. */
+        const int chili0 = b.perk[0][0] == SAP2_PERK_CHILI ? behind1 : -1;
+        const int chili1 = b.perk[1][0] == SAP2_PERK_CHILI ? behind0 : -1;
 
         /* The defender's own perk comes off the incoming amount - Garlic
          * takes 2, Melon swallows 20 and is spent. See sap2_absorb. */
@@ -3998,6 +4434,34 @@ static inline int sap2_battle_ex(SAP2 *env, SapBattle2 *out) {
         const int faint0 = b.health[0][0] <= 0;
         const int faint1 = b.health[1][0] <= 0;
 
+        /* And the splashes, in the same window as the attacks that carry
+         * them: measured (sap/tier4_drive.py `chili_perk`), a 4-attack
+         * Chili pet against three 30-health enemies logs Hurt 4 on the
+         * front and Hurt 5 on the second before any Death, and the 5 still
+         * lands when the front dies to that same attack. A flat 5, and the
+         * SECOND enemy's own shield takes its cut of it - a Garlic there
+         * left 3. */
+        int splashed[2] = {-1, -1};
+        int pending = faint0 || faint1;
+        for (int side = 0; side < 2; side++) {
+            const int victim_uid = side == 0 ? chili0 : chili1;
+            if (victim_uid < 0) {
+                continue;
+            }
+            const int foe = side ^ 1;
+            const int v = sap2_battle_find(&b, foe, victim_uid);
+            if (v < 0) {
+                continue;
+            }
+            const int taken = sap2_absorb(&b.perk[foe][v], SAP2_CHILI_SPLASH);
+            if (taken <= 0) {
+                continue;
+            }
+            b.health[foe][v] = (int8_t)(b.health[foe][v] - taken);
+            splashed[side] = victim_uid;
+            pending = pending || b.health[foe][v] <= 0;
+        }
+
         /* Reactions first, faints after - measured: a Kangaroo behind a
          * front that traded lethally still fires before that body leaves.
          * The HURT trigger fires on whatever actually lost health,
@@ -4007,12 +4471,58 @@ static inline int sap2_battle_ex(SAP2 *env, SapBattle2 *out) {
          * target, which is why a Peacock that trades lethally still
          * gains nothing. See sap2_battle_damage. */
         if (taken0 > 0) {
-            Sap2BattleCtx hc = {&b, &env->battle_rng, 0, 0, 0, b.level[0][0], b.perk[0][0], -1};
-            sap2_battle_fire(b.species[0][0], SAP2_PERK_NONE, SAP2_TRIG_HURT, &hc);
+            Sap2BattleCtx hc = sap2_battle_ctx(&b, &env->battle_rng, 0, 0, 0,
+                                               b.level[0][0], b.perk[0][0]);
+            sap2_battle_fire(sap2_battle_abilities(&b, 0, 0), SAP2_PERK_NONE,
+                             SAP2_TRIG_HURT, &hc);
         }
         if (taken1 > 0) {
-            Sap2BattleCtx hc = {&b, &env->battle_rng, 1, 0, 0, b.level[1][0], b.perk[1][0], -1};
-            sap2_battle_fire(b.species[1][0], SAP2_PERK_NONE, SAP2_TRIG_HURT, &hc);
+            Sap2BattleCtx hc = sap2_battle_ctx(&b, &env->battle_rng, 1, 0, 0,
+                                               b.level[1][0], b.perk[1][0]);
+            sap2_battle_fire(sap2_battle_abilities(&b, 1, 0), SAP2_PERK_NONE,
+                             SAP2_TRIG_HURT, &hc);
+        }
+        /* A splash is real damage, so it wakes its victim's hurt trigger
+         * too - measured, a Peacock standing second gained its +3 and a
+         * 1/4 Cricket standing second died and left its token. */
+        for (int side = 0; side < 2; side++) {
+            if (splashed[side] < 0) {
+                continue;
+            }
+            const int foe = side ^ 1;
+            const int v = sap2_battle_find(&b, foe, splashed[side]);
+            if (v < 0) {
+                continue;
+            }
+            Sap2BattleCtx hc = sap2_battle_ctx(&b, &env->battle_rng, foe, v, v,
+                                               b.level[foe][v], b.perk[foe][v]);
+            sap2_battle_fire(sap2_battle_abilities(&b, foe, v), SAP2_PERK_NONE,
+                             SAP2_TRIG_HURT, &hc);
+        }
+        /* The attacker's KILL trigger - Hippo, the only one in this
+         * roster. It is about the ATTACK: the front whose own damage took
+         * the other front to <=0 health fires, whether or not it survived
+         * the trade itself (its buff targets SELF, and a mid-faint body is
+         * not a target, so a lethal trade gains it nothing - the same gate
+         * every other finder uses). Measured through the resolver's own
+         * battle loop, three per battle, see `hippo_fight_limit`.
+         *
+         * Only the attack. Nothing in a Tier-4 roster can reach a kill by
+         * ability damage or by a Chili splash with a KILL row on it -
+         * Chili arrives on Deer's Bus, which has no ability at all - so
+         * neither was measured and neither is claimed here. */
+        for (int side = 0; side < 2; side++) {
+            if (!(side == 0 ? faint1 : faint0)) {
+                continue;
+            }
+            const int a = sap2_battle_find(&b, side, side == 0 ? front0 : front1);
+            if (a < 0) {
+                continue;
+            }
+            Sap2BattleCtx kc = sap2_battle_ctx(&b, &env->battle_rng, side, a, a,
+                                               b.level[side][a], b.perk[side][a]);
+            sap2_battle_fire(sap2_battle_abilities(&b, side, a), SAP2_PERK_NONE,
+                             SAP2_TRIG_KILL, &kc);
         }
         /* And the attacker's own after-attack trigger - Elephant, which
          * fires even when it died in this very exchange (measured,
@@ -4023,9 +4533,9 @@ static inline int sap2_battle_ex(SAP2 *env, SapBattle2 *out) {
             if (a < 0) {
                 continue;
             }
-            Sap2BattleCtx ac = {&b,  &env->battle_rng, side, a, a,
-                                b.level[side][a], b.perk[side][a], -1};
-            sap2_battle_fire(b.species[side][a], SAP2_PERK_NONE,
+            Sap2BattleCtx ac = sap2_battle_ctx(&b, &env->battle_rng, side, a, a,
+                                               b.level[side][a], b.perk[side][a]);
+            sap2_battle_fire(sap2_battle_abilities(&b, side, a), SAP2_PERK_NONE,
                              SAP2_TRIG_AFTER_ATTACK, &ac);
         }
         for (int side = 0; side < 2; side++) {
@@ -4039,13 +4549,13 @@ static inline int sap2_battle_ex(SAP2 *env, SapBattle2 *out) {
                 continue;
             }
             const int a = sap2_battle_find(&b, side, attacker_uid);
-            Sap2BattleCtx kc = {&b,  &env->battle_rng, side, w, a,
-                                b.level[side][w], b.perk[side][w], -1};
-            sap2_battle_fire(b.species[side][w], SAP2_PERK_NONE,
+            Sap2BattleCtx kc = sap2_battle_ctx(&b, &env->battle_rng, side, w, a,
+                                               b.level[side][w], b.perk[side][w]);
+            sap2_battle_fire(sap2_battle_abilities(&b, side, w), SAP2_PERK_NONE,
                              SAP2_TRIG_FRIEND_AHEAD_ATTACKED, &kc);
         }
 
-        if (!faint0 && !faint1) {
+        if (!pending) {
             continue;
         }
         /* One cascade, not two hand-ordered faints: it finds everyone at
@@ -4167,11 +4677,19 @@ static inline int sap2_resolve_round(SAP2 *env) {
          *
          * The per-turn activation counters reset here too: measured on
          * Rabbit, whose fourth food play of a turn carries no bonus and
-         * whose first play of the NEXT turn does. */
+         * whose first play of the NEXT turn does. And a Parrot's copied
+         * ability list expires here, on the same deadline and for the
+         * same reason - its Duration is Temp(1). Measured
+         * (sap/tier4_drive.py `parrot_copy`): a Parrot that read
+         * ['CricketAbility@L1'] after an end of turn reads
+         * ['ParrotAbility@L1'] again at the next start of one, at every
+         * level, and a second end of turn REPLACES the copy rather than
+         * stacking on it. */
         for (int t = 0; t < SAP2_TEAM; t++) {
             s->team[t].temp_attack = 0;
             s->team[t].temp_health = 0;
             s->team[t].uses = 0;
+            s->team[t].copied = SAP2_SPECIES_EMPTY;
         }
         sap2_roll_shop(s, sap2_tier_for_turn(env->turn), pet_slots, food_slots);
         /* Start-of-turn abilities fire AFTER the roll and after the gold
@@ -4184,34 +4702,11 @@ static inline int sap2_resolve_round(SAP2 *env) {
          * tie-break - the same rule the start-of-battle queue uses, and
          * measured the same way: three Apples into one of a Swan/Worm pair
          * flips which fires first, and at equal attack the order moves
-         * with the seed. Board position does not decide it. */
+         * with the seed. Board position does not decide it. It is the same
+         * order the END of turn uses, and the same helper - see
+         * sap2_order_by_attack. */
         int order[SAP2_TEAM];
-        int n_start = 0;
-        for (int t = 0; t < SAP2_TEAM; t++) {
-            if (s->team[t].species != SAP2_SPECIES_EMPTY) {
-                order[n_start++] = t;
-            }
-        }
-        for (int i = 0; i < n_start; i++) {
-            int pick = i;
-            int tied = 1;
-            for (int j = i + 1; j < n_start; j++) {
-                const int8_t aj = sap2_pet_attack(&s->team[order[j]]);
-                const int8_t ap = sap2_pet_attack(&s->team[order[pick]]);
-                if (aj > ap) {
-                    pick = j;
-                    tied = 1;
-                } else if (aj == ap) {
-                    tied++;
-                    if ((int)(sap2_splitmix64(&s->rng) % (uint64_t)tied) == 0) {
-                        pick = j;
-                    }
-                }
-            }
-            const int tmp = order[i];
-            order[i] = order[pick];
-            order[pick] = tmp;
-        }
+        const int n_start = sap2_order_by_attack(s, order);
         for (int i = 0; i < n_start; i++) {
             const int t = order[i];
             if (s->team[t].species == SAP2_SPECIES_EMPTY) {
@@ -4329,6 +4824,14 @@ static inline void sap2_observe(const SAP2 *env, int seat, float *out) {
             p[2 + SAP2_MAX_LEVEL + 1 + pet->perk] = 1.0f;
             p[2 + SAP2_MAX_LEVEL + 1 + SAP2_NUM_PERKS] = (float)pet->sell_bonus;
             p[2 + SAP2_MAX_LEVEL + 1 + SAP2_NUM_PERKS + 1] = (float)pet->uses;
+            /* And the copied ability list, as its own one-hot. All zeros
+             * when the pet runs its own rows, which is every pet that is
+             * not a Parrot that copied something at the last end of turn -
+             * so a set bit here is the whole of "this card will not do
+             * what its species says". */
+            if (pet->copied != SAP2_SPECIES_EMPTY) {
+                p[2 + SAP2_MAX_LEVEL + 1 + SAP2_NUM_PERKS + 2 + pet->copied] = 1.0f;
+            }
         }
         p += SAP2_TEAM_SLOT_FLOATS - SAP2_NUM_ALL_SPECIES;
     }
@@ -4337,6 +4840,11 @@ static inline void sap2_observe(const SAP2 *env, int seat, float *out) {
         const SapShopPet2 *sp = &s->shop_pets[k];
         p[sp->species] = 1.0f;
         p += SAP2_NUM_SHOP_SPECIES + 1;
+        /* Both bonuses, in the layout enum's order. The attack half is
+         * Canned Food's and it is cumulative across rolls and turns, so
+         * the pair is what says what a slot is actually worth - see
+         * SapSeat2.shop_atk_buff. */
+        *p++ = (float)sp->atk_bonus;
         *p++ = (float)sp->hp_bonus;
         *p++ = (float)sp->frozen;
     }

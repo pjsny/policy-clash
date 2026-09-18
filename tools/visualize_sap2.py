@@ -101,6 +101,12 @@ SHOP_FOOD_BASE = SHOP_PET_BASE + MAX_SHOP_PETS * SHOP_PET_SLOT_WIDTH
 SHOP_FOOD_SLOT_WIDTH = SHOP_FOOD_SLOT_FLOATS
 NUM_FOODS_ONEHOT = NUM_FOODS
 
+# Tier 4 renumbered the summoned tokens to 61-65, past the ids reserved
+# for Tiers 5 and 6 - see sap2.h's species enum. The reserved ids in
+# between never appear on a board (they have tier 0, so no pool holds
+# them), and a species this table has no entry for is a crash rather than
+# a blank: an unknown id here means the roster moved and this file did
+# not, which is the failure Tier 3 hid for a whole commit.
 SPECIES_NAME = {
     0: "-", 1: "Ant", 2: "Beaver", 3: "Cricket", 4: "Duck", 5: "Fish",
     6: "Horse", 7: "Mosquito", 8: "Otter", 9: "Pig", 10: "Pigeon",
@@ -108,7 +114,9 @@ SPECIES_NAME = {
     16: "Rat", 17: "Snail", 18: "Spider", 19: "Swan", 20: "Worm",
     21: "Badger", 22: "Camel", 23: "Dodo", 24: "Dog", 25: "Dolphin",
     26: "Elephant", 27: "Giraffe", 28: "Ox", 29: "Rabbit", 30: "Sheep",
-    31: "Z.Cricket", 32: "Bee", 33: "Dirty Rat", 34: "Ram",
+    31: "Bison", 32: "Blowfish", 33: "Deer", 34: "Hippo", 35: "Parrot",
+    36: "Penguin", 37: "Skunk", 38: "Squirrel", 39: "Turtle", 40: "Whale",
+    61: "Z.Cricket", 62: "Bee", 63: "Dirty Rat", 64: "Ram", 65: "Bus",
 }
 SPECIES_EMOJI = {
     0: " ", 1: "🐜", 2: "🦫", 3: "🦗", 4: "🦆", 5: "🐟",
@@ -117,17 +125,22 @@ SPECIES_EMOJI = {
     16: "🐀", 17: "🐌", 18: "🕷", 19: "🦢", 20: "🪱",
     21: "🦡", 22: "🐪", 23: "🦤", 24: "🐕", 25: "🐬",
     26: "🐘", 27: "🦒", 28: "🐂", 29: "🐇", 30: "🐑",
-    31: "🦗", 32: "🐝", 33: "🐁", 34: "🐏",
+    31: "🦬", 32: "🐡", 33: "🦌", 34: "🦛", 35: "🦜",
+    36: "🐧", 37: "🦨", 38: "🐿", 39: "🐢", 40: "🐋",
+    61: "🦗", 62: "🐝", 63: "🐁", 64: "🐏", 65: "🚌",
 }
 FOOD_NAME = {
     0: "-", 1: "Apple", 2: "Honey", 3: "Meat Bone", 4: "Muffin", 5: "Pill",
     6: "Bread Crumbs", 7: "Better Apple", 8: "Best Apple",
     9: "Cake", 10: "Garlic", 11: "Salad Bowl",
+    12: "Bread", 13: "Canned Food", 14: "Pear",
 }
 FOOD_EMOJI = {0: " ", 1: "🍎", 2: "🍯", 3: "🦴", 4: "🧁", 5: "💊", 6: "🥖",
-              7: "🍏", 8: "🍐", 9: "🎂", 10: "🧄", 11: "🥗"}
+              7: "🍏", 8: "🍐", 9: "🎂", 10: "🧄", 11: "🥗",
+              12: "🍞", 13: "🥫", 14: "🍐"}
 PERK_EMOJI = {PERK_NONE: "", PERK_HONEY: "🍯", PERK_MEAT_BONE: "🦴",
-              3: "🧄", 4: "🍈", 5: "🎂"}  # Garlic, Melon, Cake
+              3: "🧄", 4: "🍈", 5: "🎂",  # Garlic, Melon, Cake
+              6: "🍞", 7: "🌶"}           # Bread, Chili
 
 PAIRS = [(i, j) for i in range(5) for j in range(i + 1, 5)]
 
