@@ -21,7 +21,10 @@ from policyclash_envs.sap2 import (
     MAX_STATS,
     MAX_TICKS,
     NUM_ACTIONS,
+    NUM_ALL_SPECIES,
+    NUM_FOODS,
     NUM_PERKS,
+    NUM_SHOP_SPECIES,
     OBS_FLOATS,
     PERK_HONEY,
     PERK_NONE,
@@ -38,7 +41,7 @@ HORSE_SPECIES = 6         # sap2.h's species ids, Tier-1 Pack1 roster
 PIGEON_SPECIES = 10
 HONEY_FOOD = 2            # SAP2_HONEY
 BREAD_CRUMBS_FOOD = 6     # SAP2_BREAD_CRUMBS - Tier 2 foods took 3/4/5
-# Tier 3 (sap2.h's enum): pets 21-30, the Ram token 34, foods 9-11.
+# Tier 3 (sap2.h's enum): pets 21-30, foods 9-11.
 BADGER_SPECIES = 21
 CAMEL_SPECIES = 22
 DODO_SPECIES = 23
@@ -49,11 +52,32 @@ GIRAFFE_SPECIES = 27
 OX_SPECIES = 28
 RABBIT_SPECIES = 29
 SHEEP_SPECIES = 30
-RAM_SPECIES = 34
 BIRTHDAY_CAKE_FOOD = 9
 GARLIC_FOOD = 10
 SALAD_BOWL_FOOD = 11
 TIER3_PETS = frozenset(range(BADGER_SPECIES, SHEEP_SPECIES + 1))
+# Tier 4: pets 31-40, foods 12-14. The five summoned tokens moved to
+# 61-65 when Tier 4 claimed 31-40, past the ids reserved for Tiers 5-6 so
+# that they never move again - see sap2.h's species enum.
+BISON_SPECIES = 31
+BLOWFISH_SPECIES = 32
+DEER_SPECIES = 33
+HIPPO_SPECIES = 34
+PARROT_SPECIES = 35
+PENGUIN_SPECIES = 36
+SKUNK_SPECIES = 37
+SQUIRREL_SPECIES = 38
+TURTLE_SPECIES = 39
+WHALE_SPECIES = 40
+BREAD_FOOD = 12
+CANNED_FOOD_FOOD = 13
+PEAR_FOOD = 14
+TIER4_PETS = frozenset(range(BISON_SPECIES, WHALE_SPECIES + 1))
+CRICKET_TOKEN_SPECIES = 61
+BEE_SPECIES = 62
+DIRTY_RAT_SPECIES = 63
+RAM_SPECIES = 64
+BUS_SPECIES = 65
 
 ENV_ID = "sap2-v1"
 
@@ -110,14 +134,16 @@ def env():
     return make(ENV_ID)
 
 
-# Every field offset below is derived from the env's own widths, not
-# typed in: the species one-hot has grown twice while matching the
-# shipped roster (10 pets -> 20 plus tokens) and the food block gained a
-# price, and a hardcoded 11 or 13 here shows up as a nonsense failure
-# somewhere unrelated.
-NUM_SPECIES = TEAM_SLOT_FLOATS - (2 + MAX_LEVEL + 1 + NUM_PERKS + 2)  # team one-hot
-NUM_SHOP_SPECIES_ONEHOT = SHOP_PET_SLOT_FLOATS - 2                # shop one-hot
-NUM_FOODS_ONEHOT = SHOP_FOOD_SLOT_FLOATS - 2                      # food one-hot
+# Every field offset below is derived from the env's own EXPORTED widths.
+# They used to be worked out by subtracting the known fields from a slot
+# width, and that is exactly what Tier 4 broke: the team slot gained a
+# second species-wide one-hot (Parrot's copied ability list) and the shop
+# slot gained an attack bonus, so the subtraction produced a species
+# one-hot 31 cells too wide and argmax started returning ids no table
+# has. The widths are exported for this reason - see sap2.py.
+NUM_SPECIES = NUM_ALL_SPECIES                     # team slot species one-hot
+NUM_SHOP_SPECIES_ONEHOT = NUM_SHOP_SPECIES + 1    # shop slot, plus the empty id
+NUM_FOODS_ONEHOT = NUM_FOODS                      # food slot one-hot
 
 
 def team_species(f: np.ndarray, slot: int) -> int:
@@ -147,18 +173,44 @@ def team_perk(f: np.ndarray, slot: int) -> int:
     return int(np.argmax(f[base : base + NUM_PERKS]))
 
 
+def team_sell_bonus(f: np.ndarray, slot: int) -> float:
+    base = TEAM_BASE + slot * TEAM_SLOT_WIDTH + NUM_SPECIES + 3 + MAX_LEVEL
+    return f[base + NUM_PERKS]
+
+
+def team_uses(f: np.ndarray, slot: int) -> float:
+    base = TEAM_BASE + slot * TEAM_SLOT_WIDTH + NUM_SPECIES + 3 + MAX_LEVEL
+    return f[base + NUM_PERKS + 1]
+
+
+def team_copied(f: np.ndarray, slot: int) -> int:
+    """Which species' ability rows this slot is running, or 0 for its own.
+
+    Its own is ALL ZEROS rather than a set bit at index 0, so argmax alone
+    cannot tell "runs its own rows" from "copied species 0" - the block is
+    checked for a set bit first. Parrot is the only thing that writes it.
+    """
+    base = TEAM_BASE + slot * TEAM_SLOT_WIDTH + NUM_SPECIES + 5 + MAX_LEVEL + NUM_PERKS
+    block = f[base : base + NUM_SPECIES]
+    return int(np.argmax(block)) if block.any() else 0
+
+
 def shop_pet_species(f: np.ndarray, slot: int) -> int:
     base = SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH
     return int(np.argmax(f[base : base + NUM_SHOP_SPECIES_ONEHOT]))
 
 
-def shop_pet_hp_bonus(f: np.ndarray, slot: int) -> float:
+def shop_pet_atk_bonus(f: np.ndarray, slot: int) -> float:
     return f[SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH + NUM_SHOP_SPECIES_ONEHOT]
+
+
+def shop_pet_hp_bonus(f: np.ndarray, slot: int) -> float:
+    return f[SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH + NUM_SHOP_SPECIES_ONEHOT + 1]
 
 
 def shop_pet_frozen(f: np.ndarray, slot: int) -> bool:
     base = SHOP_PET_BASE + slot * SHOP_PET_SLOT_WIDTH
-    return bool(f[base + NUM_SHOP_SPECIES_ONEHOT + 1])
+    return bool(f[base + NUM_SHOP_SPECIES_ONEHOT + 2])
 
 
 def shop_food_species(f: np.ndarray, slot: int) -> int:
@@ -819,8 +871,6 @@ FLAMINGO_SPECIES = 12
 HEDGEHOG_SPECIES = 13
 RAT_SPECIES = 16
 SPIDER_SPECIES = 18
-CRICKET_TOKEN_SPECIES = 31   # the tokens moved up when Tier 3 landed
-DIRTY_RAT_SPECIES = 33
 
 # Enough seeds that a rule which only holds for one RNG word cannot pass.
 # Every fixture here is built with DISTINCT attacks among its simultaneous
@@ -858,6 +908,8 @@ def test_the_debug_battle_entry_point_refuses_bad_input():
         [(PIG_SPECIES, 1, 1, MAX_STATS + 1)],
         [(PIG_SPECIES, 1, 1, 1, NUM_PERKS)],           # past the perk table
         [(PIG_SPECIES, 1, 1, 1, -1)],
+        [(PIG_SPECIES, 1, 1, 1, 0, NUM_ALL_SPECIES)],  # past the species table
+        [(PIG_SPECIES, 1, 1, 1, 0, -1)],               # copied ability id
         [good[0]] * (TEAM_SLOTS + 1),                  # more pets than slots
     ):
         with pytest.raises(ValueError):
@@ -874,7 +926,7 @@ def test_the_debug_battle_entry_point_refuses_bad_input():
         ([PIG_SPECIES], TypeError),                    # a row that is not a sequence
         ([(PIG_SPECIES, 1)], ValueError),              # too few fields
         ([()], ValueError),
-        ([(PIG_SPECIES, 1, 1, 1, 0, 0)], ValueError),  # too many fields
+        ([(PIG_SPECIES, 1, 1, 1, 0, 0, 0)], ValueError),  # too many fields
         ([("Pig", 1, 1, 1)], TypeError),               # a field that is not an int
         ([(PIG_SPECIES, None, 1, 1)], TypeError),
         ([(2**200, 1, 1, 1)], OverflowError),          # wider than a C long
@@ -1298,32 +1350,821 @@ def test_melon_blocks_twenty_damage_once():
             )
 
 
-def test_tier_three_widened_the_roster_the_perks_and_the_team_slot():
-    """The three rules with no battle lever at all, pinned where they are
-    observable: the roster cap, the perk block and the team slot's width.
+def test_the_roster_cap_the_perk_block_and_the_two_widened_slots():
+    """The rules with no battle lever at all, pinned where they are
+    observable: the roster cap, the perk block and the two slot widths.
 
-    Rabbit's three-plays-a-turn cap, Birthday Cake's +1 sell value per
-    turn and Salad Bowl's two random friends are shop-phase rules; each
-    is driven against the shipped build in sap/tier3_drive.py
-    (`rabbit_limit`, `birthday_cake_perk`, `salad_bowl`) and diffed
+    Tier 3's shop-phase rules (Rabbit's three plays a turn, Birthday
+    Cake's +1 sell value, Salad Bowl's two friends) and Tier 4's
+    (Squirrel's discount, Penguin's two level-2 friends, Canned Food's
+    permanent shop buff, Bread's perk, Pear) are driven against the
+    shipped build in sap/tier3_drive.py and sap/tier4_drive.py and diffed
     action-for-action by sap/fuzz_shop.py, which is where a divergence
     would show. What the env owes them is state to live in, and that is
-    what this checks: two more per-pet numbers in the observation (the
-    sell bonus a cake has added and the activations spent this turn) and
-    three more perk ids.
+    what this checks.
+
+    Tier 4 widened BOTH per-slot blocks: a team slot gained a second
+    species-wide one-hot for Parrot's copied ability list, and a shop pet
+    slot gained an attack bonus beside Duck's health one. The widths are
+    asserted against the exported one-hot sizes rather than against typed
+    numbers, because deriving a one-hot width by subtracting the other
+    fields is exactly what broke when this block grew.
     """
     from policyclash_envs.sap2 import (
         PERK_BIRTHDAY_CAKE,
+        PERK_BREAD,
+        PERK_CHILI,
         PERK_GARLIC,
         PERK_MELON,
         ROSTER_TIER,
     )
 
-    assert ROSTER_TIER == 3
-    assert len({PERK_NONE, PERK_HONEY, PERK_GARLIC, PERK_MELON, PERK_BIRTHDAY_CAKE}) == 5
-    assert NUM_PERKS == 6
-    # 34 species ids (30 rollable + 4 tokens), and the slot carries the
-    # one-hot, attack, health, the level one-hot, exp, the perk one-hot,
-    # the sell bonus and the uses counter.
-    assert NUM_SPECIES == 35
-    assert TEAM_SLOT_FLOATS == NUM_SPECIES + 2 + MAX_LEVEL + 1 + NUM_PERKS + 2
+    assert ROSTER_TIER == 4
+    assert len(
+        {
+            PERK_NONE,
+            PERK_HONEY,
+            PERK_GARLIC,
+            PERK_MELON,
+            PERK_BIRTHDAY_CAKE,
+            PERK_BREAD,
+            PERK_CHILI,
+        }
+    ) == 7
+    assert NUM_PERKS == 8
+    # 40 rollable pets plus five tokens, numbered so that the tokens sit
+    # past the ids reserved for Tiers 5 and 6.
+    assert NUM_SHOP_SPECIES == 40
+    assert NUM_ALL_SPECIES == 66
+    assert TIER4_PETS <= set(range(1, NUM_SHOP_SPECIES + 1))
+    assert BUS_SPECIES > max(TIER4_PETS)
+    assert NUM_FOODS == 15
+    # A team slot: the species one-hot, attack, health, the level one-hot,
+    # exp, the perk one-hot, the sell bonus, the uses counter and the
+    # copied-ability one-hot.
+    assert TEAM_SLOT_FLOATS == (
+        NUM_ALL_SPECIES + 2 + MAX_LEVEL + 1 + NUM_PERKS + 2 + NUM_ALL_SPECIES
+    )
+    # A shop pet slot: the species one-hot including the empty id, the
+    # attack bonus, the health bonus and the frozen flag.
+    assert SHOP_PET_SLOT_FLOATS == NUM_SHOP_SPECIES + 1 + 3
+
+
+# ---------------------------------------------------------------------------
+# Tier 4
+#
+# Same discipline as Tier 3's block above: every expected number is the
+# SHIPPED GAME's answer, driven in policy-clash-re-tools/sap/tier4_drive.py
+# and named per test. The battle rules go through `resolve`
+# (debug_resolve_battle) because the action API has no lever for them - a
+# five-pet fixture at named stats is not reachable through reset/buy/end
+# turn at all - and Parrot's copied ability list is not reachable even in
+# principle, which is why that entry point takes a copied-ability id.
+
+
+def test_skunk_sets_the_healthiest_enemys_health_and_cannot_kill():
+    """Skunk SETS health to what is left after level thirds come off it,
+    floored at 1. It is not damage.
+
+    Measured (sap/tier4_drive.py `skunk_percent`, 33 points across three
+    levels): 30 health comes out 20, 10 and 1 by level, and 50 at level 2
+    comes out 16 - floor(50/3), not a rounded 17. `skunk_not_damage`: a
+    Melon and a Garlic on the target both leave the full effect, the log
+    carries no Hurt event at all, and a 1-health enemy at level 3 stays at
+    1 with no Death, so it can never kill.
+    """
+    from policyclash_envs.sap2 import PERK_GARLIC, PERK_MELON
+
+    # Both sides at 0 attack, so the battle is a 71-exchange draw and the
+    # whole line survives to be read: the only thing that changed either
+    # health is the Skunk's start of battle.
+    for level, (from30, from50) in ((1, (20, 33)), (2, (10, 16)), (3, (1, 1))):
+        for health, want in ((30, from30), (50, from50)):
+            for seed in BATTLE_SEEDS:
+                _, _, theirs = resolve(
+                    [(SKUNK_SPECIES, level, 0, 20)], [(PIGEON_SPECIES, 1, 0, health)], seed
+                )
+                assert theirs == [(PIGEON_SPECIES, 0, want, 1)], (
+                    f"L{level} from {health}, seed {seed}: {theirs}"
+                )
+
+    # A shield does not reduce it and is not spent by it: the target comes
+    # out at exactly the same health as the bare one above.
+    for perk in (PERK_MELON, PERK_GARLIC):
+        _, _, theirs = resolve(
+            [(SKUNK_SPECIES, 2, 0, 20)], [(PIGEON_SPECIES, 1, 0, 30, perk)], 1
+        )
+        assert theirs == [(PIGEON_SPECIES, 0, 10, 1)], f"perk {perk}: {theirs}"
+
+    # And it cannot faint anything, at any level: a 1-health enemy stays.
+    for level in (1, 2, 3):
+        _, _, theirs = resolve(
+            [(SKUNK_SPECIES, level, 0, 20)], [(PIGEON_SPECIES, 1, 0, 1)], 1
+        )
+        assert theirs == [(PIGEON_SPECIES, 0, 1, 1)], f"L{level}: {theirs}"
+
+
+def test_skunk_picks_the_highest_health_enemy():
+    """The finder takes the MOST health, not the front and not the least.
+
+    Measured (`skunk_highest`): against enemies of 9, 30 and 20 it takes
+    the 30. A tie is broken at random, which this fixture avoids by
+    keeping every health distinct.
+    """
+    line = [(PIGEON_SPECIES, 1, 0, 9), (PIGEON_SPECIES, 1, 0, 30), (PIGEON_SPECIES, 1, 0, 20)]
+    for seed in BATTLE_SEEDS:
+        _, _, theirs = resolve([(SKUNK_SPECIES, 1, 0, 20)], line, seed)
+        assert [row[2] for row in theirs] == [9, 20, 20], f"seed {seed}: {theirs}"
+
+
+def test_hippos_knockout_buff_is_capped_at_three_per_battle():
+    """+3/+3 per level whenever its own attack faints its target, three
+    times per BATTLE.
+
+    This is the rule a poked single event cannot see: measured through the
+    resolver's own battle loop (`hippo_fight_limit`), a level-1 Hippo 9/40
+    against one, two, three, four, five and six 1-health enemies ends
+    12/43, 15/46, 18/49, 18/49, 18/49 and 18/49 - flat after exactly
+    three - and two battles on the same spec both end 18/49, so the
+    counter is per battle and not per pet. Under poked events the cap does
+    not bind at all (`hippo_battle_limit`), which is why the counter lives
+    on the battle line rather than on the pet.
+    """
+    # Five, not the drive's six: a line is five cells wide, and four and
+    # five already show the cap holding past the third kill.
+    for enemies in range(1, 6):
+        kills = min(enemies, 3)
+        want = [(HIPPO_SPECIES, 9 + 3 * kills, 40 + 3 * kills, 1)]
+        for seed in BATTLE_SEEDS:
+            winner, mine, theirs = resolve(
+                [(HIPPO_SPECIES, 1, 9, 40)],
+                [(PIGEON_SPECIES, 1, 0, 1)] * enemies,
+                seed,
+            )
+            assert (winner, mine, theirs) == (0, want, []), (
+                f"{enemies} enemies, seed {seed}: {mine}"
+            )
+    # At level 3 each kill is worth +9 and the health cap bites: measured,
+    # three enemies end 36/50 and four and five change nothing.
+    for enemies in (3, 4, 5):
+        _, mine, _ = resolve(
+            [(HIPPO_SPECIES, 3, 9, 40)], [(PIGEON_SPECIES, 1, 0, 1)] * enemies, 1
+        )
+        assert mine == [(HIPPO_SPECIES, 36, MAX_STATS, 3)], f"{enemies} enemies: {mine}"
+
+
+def test_chili_hits_the_enemy_behind_the_one_its_wearer_attacked():
+    """A flat 5 onto the enemy one cell BEHIND the defender, on the
+    wearer's ATTACK only.
+
+    Measured (`chili_perk`), five separate facts: a 4-attack Chili pet
+    against three 30-health enemies leaves them 26, 25 and 30 - the second
+    body, not a friend and not the third; the 5 lands even when the
+    defender dies to that same attack; it is real damage, so a 1/4 Cricket
+    standing second dies to it and leaves its token; the SECOND enemy's own
+    shield takes its cut (a Garlic there left 3 of the 5); and with only
+    one enemy standing nothing extra happens.
+
+    The wearer here is a Bus, because that is the only body a Tier-4
+    roster can put a Chili on - the Chili FOOD is Tier 5.
+    """
+    from policyclash_envs.sap2 import PERK_CHILI, PERK_GARLIC
+
+    three = [(PIGEON_SPECIES, 1, 0, 30)] * 3
+    # The Bus dies to the enemy front in the same exchange it attacks in,
+    # so exactly one exchange happens and the line is readable.
+    for seed in BATTLE_SEEDS:
+        winner, mine, theirs = resolve(
+            [(BUS_SPECIES, 1, 4, 1, PERK_CHILI)],
+            [(PIGEON_SPECIES, 1, 9, 30)] + three[1:],
+            seed,
+        )
+        assert (winner, mine) == (1, []), f"seed {seed}: {mine}"
+        assert [row[2] for row in theirs] == [26, 25, 30], f"seed {seed}: {theirs}"
+
+    # The defender dies to that same attack and the second still takes it.
+    _, _, theirs = resolve(
+        [(BUS_SPECIES, 1, 9, 1, PERK_CHILI)],
+        [(PIGEON_SPECIES, 1, 9, 9), (PIGEON_SPECIES, 1, 0, 30)],
+        1,
+    )
+    assert theirs == [(PIGEON_SPECIES, 0, 25, 1)], theirs
+
+    # The second enemy's own shield applies: a Garlic there leaves 3 of 5.
+    _, _, theirs = resolve(
+        [(BUS_SPECIES, 1, 4, 1, PERK_CHILI)],
+        [(PIGEON_SPECIES, 1, 9, 30), (PIGEON_SPECIES, 1, 0, 30, PERK_GARLIC)],
+        1,
+    )
+    assert [row[2] for row in theirs] == [26, 27], theirs
+
+    # It is real damage, so it can faint - and a Cricket standing second
+    # leaves its token in its own cell.
+    _, _, theirs = resolve(
+        [(BUS_SPECIES, 1, 4, 1, PERK_CHILI)],
+        [(PIGEON_SPECIES, 1, 9, 30), (CRICKET_SPECIES, 1, 1, 4)],
+        1,
+    )
+    assert theirs == [(PIGEON_SPECIES, 9, 26, 1), (CRICKET_TOKEN_SPECIES, 1, 1, 1)], theirs
+
+    # With only one enemy there is no second, and nothing extra happens.
+    _, _, theirs = resolve(
+        [(BUS_SPECIES, 1, 4, 1, PERK_CHILI)], [(PIGEON_SPECIES, 1, 9, 30)], 1
+    )
+    assert theirs == [(PIGEON_SPECIES, 9, 26, 1)], theirs
+
+    # And the same wearer WITHOUT the perk leaves the second untouched -
+    # the 5 is the perk's, not the attack's.
+    _, _, theirs = resolve(
+        [(BUS_SPECIES, 1, 4, 1)], [(PIGEON_SPECIES, 1, 9, 30)] + three[1:], 1
+    )
+    assert [row[2] for row in theirs] == [26, 30, 30], theirs
+
+
+def test_deer_leaves_a_bus_at_five_by_three_per_level_in_its_own_cell():
+    """Deer's faint summons ONE Bus at 5/3 per level, at the Deer's own
+    level, in the cell the Deer vacated.
+
+    Measured (`deer_bus`): all three levels land exactly 5/3, 10/6 and
+    15/9 with perk=Chili in the Deer's own cell, and a full line is no
+    obstacle because the Deer's own cell is the room. What the Chili then
+    does is `test_chili_hits_the_enemy_behind_the_one_its_wearer_attacked`.
+    """
+    for level, (atk, hp) in ((1, (5, 3)), (2, (10, 6)), (3, (15, 9))):
+        for seed in BATTLE_SEEDS:
+            winner, mine, theirs = resolve(
+                [(DEER_SPECIES, level, 2, 1), (PIGEON_SPECIES, 1, 0, 30)],
+                [(PIGEON_SPECIES, 1, 9, 1)],
+                seed,
+            )
+            # The Deer and the enemy front trade lethally; the Bus takes
+            # the Deer's cell, ahead of the friend that was behind it.
+            assert (winner, theirs) == (0, []), f"L{level} seed {seed}: {theirs}"
+            assert mine == [(BUS_SPECIES, atk, hp, level),
+                            (PIGEON_SPECIES, 0, 30, 1)], f"L{level} seed {seed}: {mine}"
+
+
+def test_bison_does_not_buff_itself_without_another_level_three_friend():
+    """+2/+2 per level on itself at every end of turn, but ONLY while
+    another friend is at level 3 - and the finder excludes the Bison.
+
+    Measured (`bison_condition`): a level-1 friend and a level-2 friend
+    both leave it refusing with ConditionFailed, and a level-3 Bison with
+    no friend at all does not satisfy its own condition either. The half
+    this pins is the refusal, which is the half a board the action API can
+    actually build reaches: a Bison bought on a Tier-4 turn has no level-3
+    friend, so its end of turn must leave it at its base 4/4.
+
+    The other half - TypeLimit = 1, one Bison per team per event, and the
+    +2/+2 itself - needs a level-3 friend, i.e. six copies of one pet, and
+    is diffed action-for-action against the shipped build instead
+    (policy-clash-re-tools/sap/fuzz_shop.py --turn 7, which buys Bisons).
+    """
+    for seed in range(20240001, 20240121):
+        env = make(ENV_ID)
+        result = env.reset(seed=seed)
+        # Tier 4 rolls from turn 7 (SAP2_TIER_ON_TURN), so end six turns.
+        for _ in range(6):
+            result = env.step(END_TURN, END_TURN)
+        f = result.observations[0].features
+        bison = next(
+            (s for s in range(MAX_SHOP_PETS) if shop_pet_species(f, s) == BISON_SPECIES),
+            None,
+        )
+        if bison is None:
+            continue
+        result = env.step(buy(bison, 0), END_TURN)
+        f = result.observations[0].features
+        assert team_species(f, 0) == BISON_SPECIES
+        before = (team_attack(f, 0), team_health(f, 0))
+        assert before == (4.0, 4.0), f"seed {seed}: a bought Bison is 4/4, got {before}"
+        # END_TURN is the path Bison's trigger fires on. Its own condition
+        # has to fail here, so the next shop phase shows it unchanged.
+        result = env.step(END_TURN, END_TURN)
+        f = result.observations[0].features
+        assert (team_attack(f, 0), team_health(f, 0)) == before, (
+            f"seed {seed}: the Bison buffed itself with no level-3 friend"
+        )
+        return
+    raise AssertionError("no seed in the range offered a Bison on turn 7")
+
+
+def test_whale_swallows_the_friend_ahead_and_releases_it_when_it_faints():
+    """Two rows, one body of state. At the start of battle the Whale
+    DESTROYS the nearest friend ahead - running that pet's own faint
+    triggers - and remembers it; when the Whale itself faints it releases
+    it into the cell the WHALE vacated, at the WHALE's level, with the
+    stats it went in at, and with no perk.
+
+    Measured (`whale_cases`, `whale_swallow_cell`): a swallowed Cricket
+    produces BeforeDeath, Death, CricketAbility and a Summon, and the
+    token lands in the CRICKET's own vacated cell; a 4/9 Beaver comes back
+    4/9 at every Whale level; a level-3 Beaver swallowed by a level-1
+    Whale comes back at level 1; a swallowed Melon does not come back; a
+    line that is full at the moment of release still takes it, because the
+    Whale's own cell is the room; with nothing ahead of it the ability
+    does not fire at all; and a Whale that swallowed nothing fires
+    WhaleAbilityExtra and summons nothing.
+
+    It is not damage: no Hurt event and no shield in the way, which is why
+    a Melon on the victim does not save it.
+    """
+    from policyclash_envs.sap2 import PERK_MELON
+
+    # The swallowed pet's own faint triggers run: a Cricket ahead of the
+    # Whale is gone at the first exchange and its token is standing in the
+    # Cricket's cell, ahead of the Whale.
+    for seed in BATTLE_SEEDS:
+        _, mine, _ = resolve(
+            [(CRICKET_SPECIES, 1, 1, 3), (WHALE_SPECIES, 1, 3, 7)],
+            [(PIGEON_SPECIES, 1, 0, 30)],
+            seed,
+        )
+        assert mine == [(CRICKET_TOKEN_SPECIES, 1, 1, 1),
+                        (WHALE_SPECIES, 3, 7, 1)], f"seed {seed}: {mine}"
+
+    # The release: the Whale faints and the body comes back at the WHALE's
+    # level with the stats it went in at, in the Whale's own cell. A Melon
+    # on the victim neither stops the swallow nor comes back with it.
+    for whale_level in (1, 2, 3):
+        for victim_level in (1, 3):
+            for seed in BATTLE_SEEDS:
+                _, mine, theirs = resolve(
+                    [(PIG_SPECIES, victim_level, 4, 9, PERK_MELON),
+                     (WHALE_SPECIES, whale_level, 2, 1)],
+                    [(PIGEON_SPECIES, 1, 9, 1)],
+                    seed,
+                )
+                # Whale and enemy trade lethally; the Pig it swallowed is
+                # released into the Whale's cell at the WHALE's level.
+                assert (mine, theirs) == ([(PIG_SPECIES, 4, 9, whale_level)], []), (
+                    f"whale L{whale_level} victim L{victim_level} seed {seed}: {mine}"
+                )
+
+    # Nothing ahead of it: the ability does not fire, and the Whale that
+    # swallowed nothing releases nothing when it dies.
+    for seed in BATTLE_SEEDS:
+        winner, mine, theirs = resolve(
+            [(WHALE_SPECIES, 1, 2, 1)], [(PIGEON_SPECIES, 1, 9, 30)], seed
+        )
+        assert (winner, mine) == (1, []), f"seed {seed}: {mine}"
+        assert theirs == [(PIGEON_SPECIES, 9, 28, 1)], f"seed {seed}: {theirs}"
+
+    # A FULL line still takes the release: the Whale's own cell is the room.
+    for seed in BATTLE_SEEDS:
+        _, mine, _ = resolve(
+            [(PIG_SPECIES, 1, 4, 9), (WHALE_SPECIES, 1, 2, 1)]
+            + [(PIGEON_SPECIES, 1, 0, 30)] * 3,
+            [(PIGEON_SPECIES, 1, 9, 1)],
+            seed,
+        )
+        assert mine == [(PIG_SPECIES, 4, 9, 1)] + [(PIGEON_SPECIES, 0, 30, 1)] * 3, (
+            f"seed {seed}: {mine}"
+        )
+
+
+def test_parrot_runs_the_ability_list_of_the_pet_ahead_of_it():
+    """Parrot REPLACES its own ability list with the nearest pet ahead's,
+    at the PARROT's level, until the next start of turn - and the copy is
+    live in the battle that follows.
+
+    Measured (`parrot_copy`): a Parrot ahead of a Cricket reads
+    ['ParrotAbility@L1'] before the boundary and ['CricketAbility@L1']
+    after it; at L2 and L3 the copy is CricketAbility@L2 and @L3, the
+    COPIER's level and never the source's; the next start of turn puts
+    ParrotAbility back; with nothing ahead of it the ability does not fire
+    at all; and a second end of turn REPLACES rather than adds.
+    (`parrot_in_battle`): a Parrot carrying CricketAbility left a 1/1
+    token on its own faint, and a Parrot carrying a Mosquito's ability put
+    a second start-of-battle shot into the fight.
+
+    The copy is set at the END of a build phase and cleared at the next
+    START of one, so no sequence of actions can put a copied list into a
+    battle fixture: `debug_resolve_battle` takes the copied-ability id as
+    its sixth field, and that is the only lever there is.
+    """
+    from policyclash_envs.sap2 import PERK_NONE
+
+    # Carrying a Cricket's ability, the Parrot's OWN faint leaves a token.
+    for seed in BATTLE_SEEDS:
+        _, mine, _ = resolve(
+            [(PARROT_SPECIES, 1, 2, 1, PERK_NONE, CRICKET_SPECIES),
+             (PIGEON_SPECIES, 1, 0, 30)],
+            [(PIGEON_SPECIES, 1, 9, 1)],
+            seed,
+        )
+        assert mine == [(CRICKET_TOKEN_SPECIES, 1, 1, 1),
+                        (PIGEON_SPECIES, 0, 30, 1)], f"seed {seed}: {mine}"
+
+    # ...and the token's stats scale with the COPIER's level, because the
+    # copied row is run at the Parrot's own level. A Cricket's token is
+    # level-many, so a level-3 Parrot leaves a 3/3.
+    for level in (1, 2, 3):
+        for seed in BATTLE_SEEDS:
+            _, mine, _ = resolve(
+                [(PARROT_SPECIES, level, 2, 1, PERK_NONE, CRICKET_SPECIES),
+                 (PIGEON_SPECIES, 1, 0, 30)],
+                [(PIGEON_SPECIES, 1, 9, 1)],
+                seed,
+            )
+            assert mine[0] == (CRICKET_TOKEN_SPECIES, level, level, level), (
+                f"L{level} seed {seed}: {mine}"
+            )
+
+    # The same Parrot with NO copy runs its own list, which has nothing to
+    # do in a battle at all: no token.
+    for seed in BATTLE_SEEDS:
+        _, mine, _ = resolve(
+            [(PARROT_SPECIES, 1, 2, 1), (PIGEON_SPECIES, 1, 0, 30)],
+            [(PIGEON_SPECIES, 1, 9, 1)],
+            seed,
+        )
+        assert mine == [(PIGEON_SPECIES, 0, 30, 1)], f"seed {seed}: {mine}"
+
+    # A copied START_BATTLE row fires from the copy too: a Parrot carrying
+    # a Skunk's ability sets the healthiest enemy's health, and at the
+    # PARROT's level - level 2 takes 30 to 10, where the Skunk's own level
+    # is not consulted at all.
+    for level, want in ((1, 20), (2, 10), (3, 1)):
+        _, _, theirs = resolve(
+            [(PARROT_SPECIES, level, 0, 20, PERK_NONE, SKUNK_SPECIES)],
+            [(PIGEON_SPECIES, 1, 0, 30)],
+            1,
+        )
+        assert theirs == [(PIGEON_SPECIES, 0, want, 1)], f"L{level}: {theirs}"
+
+
+def test_the_copied_ability_list_is_observable_and_expires_at_the_turn_boundary():
+    """The observation carries the copied list as its own one-hot, all
+    zeros when the pet runs its own rows.
+
+    Parrot's copy REPLACES the list until the next start of turn
+    (measured, `parrot_copy`), so the species one-hot alone no longer says
+    what a pet will DO in the battle that follows - which is the single
+    most payoff-relevant fact about it, and why it is in the observation.
+    """
+    for seed in range(20240001, 20240121):
+        env = make(ENV_ID)
+        result = env.reset(seed=seed)
+        for _ in range(6):  # Tier 4 rolls from turn 7
+            result = env.step(END_TURN, END_TURN)
+        f = result.observations[0].features
+        parrot = next(
+            (s for s in range(MAX_SHOP_PETS) if shop_pet_species(f, s) == PARROT_SPECIES),
+            None,
+        )
+        other = next(
+            (s for s in range(MAX_SHOP_PETS)
+             if shop_pet_species(f, s) not in (PARROT_SPECIES, 0)),
+            None,
+        )
+        if parrot is None or other is None:
+            continue
+        # The other pet in FRONT of the Parrot, so the Parrot has a pet
+        # ahead of it to copy.
+        result = env.step(buy(parrot, 0), END_TURN)
+        f = result.observations[0].features
+        assert team_copied(f, 0) == 0, "a freshly bought Parrot runs its own rows"
+        source = next(
+            (s for s in range(MAX_SHOP_PETS)
+             if shop_pet_species(f, s) not in (PARROT_SPECIES, 0)),
+            None,
+        )
+        if source is None:
+            continue
+        source_species = shop_pet_species(f, source)
+        result = env.step(buy(source, 0), END_TURN)  # drops in front, Parrot slides back
+        f = result.observations[0].features
+        if team_species(f, 0) != source_species or team_species(f, 1) != PARROT_SPECIES:
+            continue
+        # The end of turn is where the copy happens.
+        result = env.step(END_TURN, END_TURN)
+        f = result.observations[0].features
+        # ...and the next start of turn is where it expires, which is the
+        # state this observation shows: the copy lived for exactly the
+        # battle in between.
+        assert team_copied(f, 1) == 0, (
+            f"seed {seed}: the copy outlived the turn boundary"
+        )
+        return
+    raise AssertionError("no seed in the range offered a Parrot and a second pet on turn 7")
+
+
+def test_turtle_hands_a_melon_to_level_many_friends_behind_it():
+    """The Melon perk, and nothing else, onto the LEVEL-many nearest
+    friends behind, at its BEFORE_DEATH.
+
+    Measured (`turtle_behind`): level 1 perks one, level 2 two, level 3
+    three, a mid-faint body in the way is stepped over, and with nothing
+    behind it the ability does not fire. Landing the perk wakes a Rabbit
+    behind it exactly as Ox's does - the perk-gained bus, not something
+    special to either pet.
+
+    A perk is not in a survivor row, so the Melon is read through what it
+    DOES: it swallows one 9-damage hit whole (see
+    `test_melon_blocks_twenty_damage_once`), which buys its wearer one
+    extra exchange and so one extra 5-attack swing at the enemy. Two
+    5-attack friends behind a 50-health enemy therefore leave it at 38
+    with no Melon, 33 with one and 28 with two.
+    """
+    behind = [(PIGEON_SPECIES, 1, 5, 2), (PIGEON_SPECIES, 1, 5, 2)]
+    enemy = [(PIGEON_SPECIES, 1, 9, MAX_STATS)]
+    # A 2/1 body that is NOT a Turtle: the same trade, no perks handed out.
+    for front, want in (
+        ((PIGEON_SPECIES, 1, 2, 1), 38),
+        ((TURTLE_SPECIES, 1, 2, 1), 33),
+        ((TURTLE_SPECIES, 2, 2, 1), 28),
+        ((TURTLE_SPECIES, 3, 2, 1), 28),  # only two friends exist to perk
+    ):
+        for seed in BATTLE_SEEDS:
+            winner, mine, theirs = resolve([front] + behind, enemy, seed)
+            assert (winner, mine) == (1, []), f"{front} seed {seed}: {mine}"
+            assert theirs == [(PIGEON_SPECIES, 9, want, 1)], (
+                f"{front} seed {seed}: {theirs}"
+            )
+
+    # Nothing behind it: the ability does not fire, and the trade is the
+    # bare one.
+    for seed in BATTLE_SEEDS:
+        _, _, theirs = resolve([(TURTLE_SPECIES, 2, 2, 1)], enemy, seed)
+        assert theirs == [(PIGEON_SPECIES, 9, MAX_STATS - 2, 1)], f"seed {seed}: {theirs}"
+
+
+def test_blowfish_deals_three_per_level_back_every_time_it_is_hurt():
+    """3, 6 or 9 damage to one random enemy every time it takes damage.
+
+    Measured: a level-1 Blowfish taking 1 damage dealt 3 back and a
+    level-3 one dealt 9 and killed a 9-health Beaver outright. It fires on
+    a hit that kills it too - the hurt trigger is not gated on survival.
+
+    With exactly ONE enemy the random pick is forced, which is what makes
+    this seed-independent.
+    """
+    for level in (1, 2, 3):
+        for seed in BATTLE_SEEDS:
+            _, _, theirs = resolve(
+                [(BLOWFISH_SPECIES, level, 3, 1)], [(PIGEON_SPECIES, 1, 9, 30)], seed
+            )
+            # One exchange: the Blowfish dies, deals its 3 attack, and its
+            # hurt trigger deals 3 per level on top.
+            assert theirs == [(PIGEON_SPECIES, 9, 30 - 3 - 3 * level, 1)], (
+                f"L{level} seed {seed}: {theirs}"
+            )
+
+
+def test_squirrel_takes_level_gold_off_every_food_in_the_shop():
+    """Squirrel's start of turn rewrites the price of every food STANDING
+    in the shop, floored at 0.
+
+    Measured (`squirrel_discount`): a 3-gold Apple comes out at 2, 1 and 0
+    by level, a 1-gold Pill at level 3 comes out at 0 rather than at -2,
+    and a roll afterwards brings stock back at full price - so it is a
+    one-time rewrite of the slots that exist, not a standing discount.
+    """
+    for seed in range(20240001, 20240161):
+        env = make(ENV_ID)
+        result = env.reset(seed=seed)
+        for _ in range(6):  # Tier 4 rolls from turn 7
+            result = env.step(END_TURN, END_TURN)
+        f = result.observations[0].features
+        squirrel = next(
+            (s for s in range(MAX_SHOP_PETS)
+             if shop_pet_species(f, s) == SQUIRREL_SPECIES),
+            None,
+        )
+        if squirrel is None:
+            continue
+        result = env.step(buy(squirrel, 0), END_TURN)
+        result = env.step(END_TURN, END_TURN)
+        f = result.observations[0].features
+        prices = [
+            (shop_food_species(f, k), shop_food_price(f, k))
+            for k in range(FOOD_SLOTS)
+            if shop_food_species(f, k)
+        ]
+        assert prices, f"seed {seed}: the new turn rolled no food at all"
+        for food, price in prices:
+            # Every Pack1 food is 3 gold except Pill at 1; a level-1
+            # Squirrel takes exactly 1 off, floored at 0.
+            assert price == max(0, (1 if food == 5 else 3) - 1), (
+                f"seed {seed}: food {food} at {price}g after a level-1 Squirrel"
+            )
+        # A ROLL brings stock back at full price - the discount was a
+        # rewrite of the slots that existed, not a property of the shop.
+        result = env.step(REROLL, END_TURN)
+        f = result.observations[0].features
+        rolled = [
+            (shop_food_species(f, k), shop_food_price(f, k))
+            for k in range(FOOD_SLOTS)
+            if shop_food_species(f, k)
+        ]
+        for food, price in rolled:
+            assert price == (1 if food == 5 else 3), (
+                f"seed {seed}: rolled food {food} still discounted at {price}g"
+            )
+        return
+    raise AssertionError("no seed in the range offered a Squirrel on turn 7")
+
+
+def find_tier4_shop(food: int | None = None, pet: int | None = None):
+    """A turn-7 board (the first Tier-4 turn) offering `food`/`pet`.
+
+    Returns (env, result, food_slot, pet_slot). A seed search rather than a
+    fixture, because a shop's contents are the roll's business: the rule
+    under test is what the offer DOES, not which seed produces it.
+    """
+    for seed in range(20240001, 20240401):
+        env = make(ENV_ID)
+        result = env.reset(seed=seed)
+        for _ in range(6):
+            result = env.step(END_TURN, END_TURN)
+        f = result.observations[0].features
+        fs = next(
+            (k for k in range(FOOD_SLOTS) if shop_food_species(f, k) == food), None
+        ) if food is not None else None
+        ps = next(
+            (s for s in range(MAX_SHOP_PETS) if shop_pet_species(f, s) == pet), None
+        ) if pet is not None else 0
+        if (food is not None and fs is None) or (pet is not None and ps is None):
+            continue
+        return env, result, fs, ps
+    raise AssertionError(f"no turn-7 seed offered food {food} / pet {pet}")
+
+
+def test_pear_is_two_by_two_permanent():
+    """Pear is an Apple's effect class at +2/+2, and it is PERMANENT.
+
+    Measured (`pear`): an Ant went 2/2 -> 4/4 and was unchanged across a
+    turn boundary. Its price is 3 (`bread_pear_prices`, off the build's
+    own GetItemPrice).
+    """
+    env, result, food, _ = find_tier4_shop(food=PEAR_FOOD)
+    f = result.observations[0].features
+    assert shop_food_price(f, food) == 3
+    species = shop_pet_species(f, 0)
+    result = env.step(buy(0, 0), END_TURN)
+    f = result.observations[0].features
+    before = (team_attack(f, 0), team_health(f, 0))
+    food = next(k for k in range(FOOD_SLOTS) if shop_food_species(f, k) == PEAR_FOOD)
+    result = env.step(buy_food(food, 0), END_TURN)
+    f = result.observations[0].features
+    assert team_species(f, 0) == species
+    assert (team_attack(f, 0), team_health(f, 0)) == (before[0] + 2, before[1] + 2)
+    # Permanent: the round advance clears temporary halves, not this.
+    result = env.step(END_TURN, END_TURN)
+    f = result.observations[0].features
+    assert (team_attack(f, 0), team_health(f, 0)) == (before[0] + 2, before[1] + 2)
+
+
+def test_bread_changes_no_stat_and_leaves_a_perk():
+    """Bread is the third declarative perk food: no stat change at all,
+    and a perk worth +7 TEMPORARY health at every end of turn.
+
+    Measured (`bread_perk`): a Bread'd Ant's permanent halves never move,
+    its temporary health goes 0 -> 7 at every end of turn and 7 -> 0 at
+    every start of one, so it is +7 for that turn's battle and never
+    accumulates. The +7 itself lands after this seat's build phase has
+    closed, so no shop-phase observation can show it; it is diffed
+    action-for-action against the shipped build by
+    policy-clash-re-tools/sap/fuzz_shop.py --turn 7. What this pins is the
+    half the observation does carry: the perk, and the absence of a stat
+    change.
+    """
+    from policyclash_envs.sap2 import PERK_BREAD
+
+    env, result, food, _ = find_tier4_shop(food=BREAD_FOOD)
+    f = result.observations[0].features
+    assert shop_food_price(f, food) == 3
+    result = env.step(buy(0, 0), END_TURN)
+    f = result.observations[0].features
+    before = (team_attack(f, 0), team_health(f, 0))
+    assert team_perk(f, 0) == PERK_NONE
+    food = next(k for k in range(FOOD_SLOTS) if shop_food_species(f, k) == BREAD_FOOD)
+    result = env.step(buy_food(food, 0), END_TURN)
+    f = result.observations[0].features
+    assert team_perk(f, 0) == PERK_BREAD
+    assert (team_attack(f, 0), team_health(f, 0)) == before
+
+
+def test_canned_food_buffs_the_shop_permanently_and_cumulatively():
+    """Canned Food is played on the BOARD and installs a standing +1/+1 on
+    the SHOP: every pet standing in it now, and every pet a later refill
+    brings in, that turn and after it.
+
+    Measured (`canned_food`): the three pets in the shop go up at once, the
+    next roll's pets come in already buffed, a second Canned Food makes it
+    +2/+2, the pair survives a turn boundary, and a pet BOUGHT out of that
+    shop keeps it - a Pig out of a two-deep shop arrives 6/3 against its
+    4/1 base. Played AIMED at a pet the resolver produces no delta at all,
+    which is why sap2_food_is_board_wide offers it once rather than five
+    times.
+    """
+    env, result, food, _ = find_tier4_shop(food=CANNED_FOOD_FOOD)
+    f = result.observations[0].features
+    before = [shop_pet_species(f, s) for s in range(MAX_SHOP_PETS)]
+    result = env.step(buy_food(food, 0), END_TURN)
+    f = result.observations[0].features
+    for s in range(MAX_SHOP_PETS):
+        if before[s]:
+            assert (shop_pet_atk_bonus(f, s), shop_pet_hp_bonus(f, s)) == (1.0, 1.0), (
+                f"slot {s} after one Canned Food"
+            )
+    # A ROLL brings new stock in already buffed - the bonus is the seat's,
+    # not the slot's.
+    result = env.step(REROLL, END_TURN)
+    f = result.observations[0].features
+    for s in range(MAX_SHOP_PETS):
+        if shop_pet_species(f, s):
+            assert (shop_pet_atk_bonus(f, s), shop_pet_hp_bonus(f, s)) == (1.0, 1.0), (
+                f"slot {s} after a roll"
+            )
+    # ...and so does the next turn's roll.
+    result = env.step(END_TURN, END_TURN)
+    f = result.observations[0].features
+    for s in range(MAX_SHOP_PETS):
+        if shop_pet_species(f, s):
+            assert (shop_pet_atk_bonus(f, s), shop_pet_hp_bonus(f, s)) == (1.0, 1.0), (
+                f"slot {s} after the turn boundary"
+            )
+    # A pet bought out of that shop KEEPS it.
+    species = shop_pet_species(f, 0)
+    result = env.step(buy(0, 0), END_TURN)
+    f = result.observations[0].features
+    assert team_species(f, 0) == species
+    assert (team_attack(f, 0), team_health(f, 0)) == (
+        BASE_ATK_FOR_TEST[species] + 1, BASE_HP_FOR_TEST[species] + 1
+    )
+
+
+def test_penguin_does_not_fire_without_a_level_two_friend():
+    """Penguin's start of turn buffs TWO random friends of level 2 or
+    higher, and the finder excludes the Penguin itself.
+
+    Measured (`penguin_targets`): over ten seeds on a team of friends at
+    levels 1, 2, 3 and 2 the level-1 one is never picked; a level-2
+    Penguin beside one level-2 friend buffs only the friend; and with no
+    eligible friend it does not fire at all. The last of those is the half
+    a board the action API can build reaches - levelling a friend to 2
+    costs three copies of one species - so it is what this pins; the
+    positive case is diffed against the shipped build by
+    policy-clash-re-tools/sap/fuzz_shop.py --turn 7.
+    """
+    env, result, _, penguin = find_tier4_shop(pet=PENGUIN_SPECIES)
+    result = env.step(buy(penguin, 0), END_TURN)
+    f = result.observations[0].features
+    other = next(
+        (s for s in range(MAX_SHOP_PETS) if shop_pet_species(f, s)), None
+    )
+    assert other is not None
+    result = env.step(buy(other, 1), END_TURN)
+    f = result.observations[0].features
+    stats = [(team_attack(f, p), team_health(f, p)) for p in range(TEAM_SLOTS)]
+    result = env.step(END_TURN, END_TURN)  # a whole turn boundary, so StartTurn fires
+    f = result.observations[0].features
+    assert [(team_attack(f, p), team_health(f, p)) for p in range(TEAM_SLOTS)] == stats, (
+        "Penguin buffed something with no level-2 friend on the board"
+    )
+
+# sap2.h's SAP2_BASE_ATK / SAP2_BASE_HP, for the one test that has to say
+# what a shop pet's stats WOULD have been without a bonus on the slot.
+BASE_ATK_FOR_TEST = [0, 2, 3, 1, 2, 2, 2, 2, 1, 4, 3, 4, 3, 4, 2, 2, 3, 2, 2, 1, 1, 6, 3, 4, 3, 4, 3, 1, 1, 1, 2, 4, 3, 2, 4, 4, 2, 3, 3, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 5]
+BASE_HP_FOR_TEST = [0, 2, 2, 3, 2, 3, 1, 2, 4, 1, 2, 1, 2, 2, 2, 5, 6, 3, 2, 2, 4, 3, 3, 2, 2, 3, 7, 2, 3, 2, 2, 4, 6, 2, 6, 2, 3, 5, 5, 5, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 3]
+
+
+def test_the_built_extension_matches_the_header_it_was_built_from():
+    """A stale `.so` makes every other test in this file a lie.
+
+    This actually happened: a commit swept an in-progress `sap2.h` onto
+    `main`, the installed extension predated it, and the suite reported 84
+    green against bytes built from the previous header. A fresh build then
+    failed 15 tests. Nothing in the suite could see it, because every test
+    imports the extension and none of them reads the source.
+
+    So: parse the constants out of `sap2.h` and compare them to what the
+    loaded module reports. Cheap, and it fails loudly on exactly the
+    mismatch that produced a false green.
+    """
+    import re
+    from pathlib import Path
+
+    header = Path(__file__).resolve().parents[1] / "csrc" / "sap2.h"
+    src = header.read_text()
+
+    def define(name: str) -> int:
+        m = re.search(rf"#define\s+{name}\s+(\d+)", src)
+        assert m, f"{name} not found in {header}"
+        return int(m.group(1))
+
+    def enum_value(name: str) -> int:
+        m = re.search(rf"\b{name}\s*=\s*(\d+)", src)
+        assert m, f"{name} not found in {header}"
+        return int(m.group(1))
+
+    from policyclash_envs import sap2 as mod
+
+    assert mod.ROSTER_TIER == define("SAP2_ROSTER_TIER"), "stale extension: rebuild with `uv pip install -e .`"
+    assert mod.NUM_ALL_SPECIES == enum_value("SAP2_NUM_ALL_SPECIES"), "stale extension: rebuild"
+    assert mod.NUM_SHOP_SPECIES == enum_value("SAP2_NUM_SHOP_SPECIES"), "stale extension: rebuild"
+    assert mod.NUM_FOODS == enum_value("SAP2_NUM_FOODS"), "stale extension: rebuild"
+    assert mod.NUM_PERKS == enum_value("SAP2_NUM_PERKS"), "stale extension: rebuild"
+    assert mod.MAX_LEVEL == define("SAP2_MAX_LEVEL"), "stale extension: rebuild"

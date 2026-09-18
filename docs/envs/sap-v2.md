@@ -657,6 +657,135 @@ line-ups at Tier 1, Tier 2 and Tier 3, 300/300 deterministic boards and
 200/200 holed boards at Tier 3 - `difftest.py` grew a `--tier3` flag and
 its species map grew the ten new pets for exactly this.
 
+## Tier 4 roster
+
+Same method as Tier 3, and the same gate: every row was generated from
+`sap/spec.py`'s dump of the shipped build's own ability templates, fired
+once with `sap/ability_check.py --pet X --levels`, and everything a
+template cannot carry - a Calculator's multiplier, an ordered finder's
+end, a TriggerLimitType's scope, a TypeLimit, what an
+`EffectRememberMinion` remembers, what an `EffectCopyAbility` replaces -
+was driven separately in `sap/tier4_drive.py`, named per row. Nothing
+here came from a scrape; two base stats in the community scrape the
+tier-3..6 plan was written from are simply wrong (Hippo is 4/6 not 4/7,
+Squirrel 3/5 not 2/5). The gate is `sap/audit_roster.py --tier 4`: zero
+WRONG and zero MISSING rows for tiers 1-4.
+
+**Roster**: Bison 4/4, Blowfish 3/6, Deer 2/2, Hippo 4/6, Parrot 4/2,
+Penguin 2/3, Skunk 3/5, Squirrel 3/5, Turtle 2/5, Whale 3/7, rollable
+from turn 7 alongside Tiers 1-3, plus **Bread, Canned Food and Pear** at
+3 gold each (off the build's own `GetItemPrice`). Deer's Bus is a
+sixth summoned token, 5/3, and it arrives wearing a **Chili** perk - the
+second perk to land a tier ahead of its food, as Melon did with Ox.
+
+| Pet | Trigger | Effect (L1/L2/L3) |
+|---|---|---|
+| Bison | EndTurn | itself +2/+2, +4/+4, +6/+6 permanent, but ONLY while ANOTHER friend is at level 3, and only for ONE Bison per team |
+| Blowfish | Hurt | 3/6/9 damage to one random enemy - fires on a hit that kills it too |
+| Deer | Death | one Bus at 5/3, 10/6, 15/9, at its own level, WEARING Chili, in the cell it vacated |
+| Hippo | its attack fainted its target | itself +3/+3, +6/+6, +9/+9 permanent, **three times per BATTLE** |
+| Parrot | EndTurn | REPLACES its own ability list with the nearest pet ahead's, at the PARROT's level, until the next start of turn |
+| Penguin | StartTurn | TWO random friends of level 2+ get +1/+1, +2/+2, +3/+3 permanent - self excluded |
+| Skunk | StartBattle | SETS the most-health enemy's health to `health x (3 - level) / 3`, floored at 1 - not damage |
+| Squirrel | StartTurn | 1/2/3 gold off every food standing in the shop, floored at 0 |
+| Turtle | BeforeDeath | the Melon perk onto the 1/2/3 nearest friends behind |
+| Whale | StartBattle + Death | swallows the nearest friend ahead, running its faint triggers, and releases it when the Whale itself faints |
+
+| Food | Effect |
+|---|---|
+| Bread | no stat change; a perk worth +7 TEMPORARY health at every end of turn - so +7 for that turn's battle, never accumulating |
+| Canned Food | +1/+1 to the SHOP, permanently and cumulatively across rolls and turns; played on the BOARD, not on a pet |
+| Pear | +2/+2 permanent - the same effect class as an Apple at a different amount |
+
+**The five rules that are easy to get wrong**, each driven rather than
+reasoned about:
+
+* **Skunk SETS health, it does not damage.** `health x (3 - level) / 3`
+  floored at 1, on the HIGHEST-health enemy with a random tie-break. 33
+  measured points pin the expression (`skunk_percent`): 50 health at
+  level 2 comes out **16**, `floor(50/3)`, not a rounded 17. And
+  `skunk_not_damage`: a Melon and a Garlic both leave the full effect and
+  stay on the pet, the log carries no Hurt event at all, a Peacock target
+  gains nothing, and a 1-health enemy at level 3 stays at 1 with no
+  Death - so it can never kill. It starts no faint cascade, because
+  nothing it does can start one.
+* **Hippo's cap is THREE PER BATTLE and it resets between battles.** A
+  poked single event on a merged grid cannot see the cap at all -
+  `hippo_battle_limit` is kept as the counter-example so nobody
+  re-derives the wrong rule from it - so it was driven through
+  `BoardResolver.Resolve` itself (`hippo_fight_limit`): 9/40 against one
+  to six 1-health enemies ends 12/43, 15/46, 18/49, 18/49, 18/49, 18/49,
+  and two battles on the same spec both end 18/49. The counter therefore
+  lives on the battle LINE (`SapBattle2.battle_uses`), not on the pet,
+  which is exactly what makes it start at zero every time - a different
+  scope from Rabbit's and Ox's per-TURN counter, which is carried in from
+  the pet.
+* **Chili is a flat 5 on the ATTACK only.** It lands on the enemy one
+  cell BEHIND the defender, fires even when the defender dies to that
+  same attack, is reduced by that second enemy's own shield (a Garlic
+  there took 3 of the 5), wakes that enemy's hurt trigger and can faint
+  it - and it is NOT carried by ability damage: a Chili'd Mosquito's
+  start-of-battle shot stayed at 1 with two enemies on the line. Like
+  Meat Bone it has an empty ability template, so it lives in the
+  exchange and nowhere else.
+* **Parrot REPLACES, at its own level, for one turn.** The copy is the
+  nearest pet ahead's EFFECTIVE list, so a Parrot behind a Parrot chains;
+  it runs at the COPIER's level, never the source's; the next start of
+  turn puts its own list back; with nothing ahead of it the ability does
+  not fire; a second end of turn replaces rather than adds; and it is
+  live in the battle that follows. That last one is why the copy is
+  carried on the battle line and why it is in the observation: the
+  species one-hot alone no longer says what a card will DO.
+* **Whale's swallow runs the victim's faint triggers.** The body is
+  DESTROYED, not damaged - no Hurt event, no shield in the way - and a
+  swallowed Cricket's token lands in the CRICKET's own vacated cell. The
+  release lands in the cell the WHALE vacated, at the WHALE's level, with
+  the stats the victim went in at and no perk; a line that is full at the
+  moment of release still takes it, because the Whale's own cell is the
+  room; and a Whale that swallowed nothing summons nothing.
+
+**The end-of-turn trigger order is attack-descending with a random
+tie-break**, the same rule and the same helper the start of turn already
+used. Tiers 1-3 could not tell positional order from this one - every
+end-of-turn ability there is order-blind - and Bison's TypeLimit made it
+visible (`end_turn_order`): two equal Bisons split 11/9 over twenty
+seeds, three split 9/6/5, and with unequal attack the 6-attack one wins
+from either board position. Two Parrots read it without a limit at all,
+because the one that goes second copies a list the first has already
+replaced. **This changes seat RNG on tiers 1-3 boards even though no
+tier-1-3 ability can observe the order, so stored replays shift across
+this commit.**
+
+**Three rules landed that Tier 4 did not introduce but exposed.** A
+summon can arrive WEARING a perk, off the effect's own
+`EffectSummonProcessor` rather than off a spell played on the body, so it
+wakes nothing (Deer's Bus: the only events are the Deer's Death and the
+Summon); a shop buff can belong to the SEAT rather than to a slot
+(`EffectBuffShopPermanent`, Canned Food, which every later refill
+inherits - as against Duck's `EffectBuffShop`, which dies with the next
+roll); and a food can be played on the BOARD with a pet aimed at it and
+be silently refused, which Salad Bowl already did and Canned Food does
+too.
+
+**What is still capped.** `SAP2_ROSTER_TIER = 4`. Behind it is only tiers
+5-6, which are not written: a turn-9 shop draws from 40 species where the
+real game draws from 50. Nothing inside a shipped tier is deferred.
+Species ids 41-60 are blocked out for those two tiers and the summoned
+tokens moved to 61-65 to pay that renumbering once - an id is a persisted
+observation index and a checked-in bot keys off it.
+
+**Verified**: 100 env tests; `audit_roster.py --tier 4` with zero WRONG
+and zero MISSING rows for tiers 1-4 (every remaining row is `pool.t5` or
+`pool.t6`); 26/26 scripted shop checks; 25 fuzz episodes each at turns 1,
+3, 5 and 7 with no divergence; `difftest_match.py` with no divergence;
+300/300 exact surviving line-ups at Tiers 1, 2, 3 and 4; 300/300
+deterministic boards and 199/200 holed boards at Tier 4. The one holed
+board that disagrees is a **pre-existing Tier-3 divergence**, not a
+Tier-4 one: it holds no Tier-4 pet, it reproduces byte-identically
+against `main`'s own header, and it is a deterministic 1-health gap on an
+Elephant/Dog board rather than a coin flip (the same board's survivor
+distributions differ 200/200 over fresh seeds).
+
 ## Pack scope: Turtle only, and the ladder is not
 
 Measured via `policy-clash-re-tools`' `sap/pack_probe.py`, driving the
@@ -738,9 +867,25 @@ by `ChangePackRequest`), so the sampling lives entirely server-side.
    `EatFood` is named for the build's `FoodEatenByFriendly`; Seal's
    tier-5 `FoodEatenByThis` is a DIFFERENT enum on the same trigger
    class and needs its own id when that tier lands.
-4. **Tier 4** (Skunk, Hippo, Bison, Blowfish, Turtle, Squirrel, Penguin,
-   Deer, Whale, Parrot + Pear, Canned Food, Bread): introduces `KnockOut`
-   (Hippo) and permanent shop-wide buffs (Canned Food).
+4. **Tier 4 — done**, see "Tier 4 roster" above. Bison, Blowfish, Deer,
+   Hippo, Parrot, Penguin, Skunk, Squirrel, Turtle, Whale + Bread, Canned
+   Food and Pear, plus Deer's Bus token and the Chili perk it wears.
+   Introduced `KnockOut` (`SAP2_TRIG_KILL`, Hippo) as a trigger, the
+   highest-health enemy finder (`HIGHEST_HEALTH_ENEMY`, Skunk),
+   `SET_HEALTH`, `GIVE_PERK`, `DISCOUNT_FOOD`, `SWALLOW` and
+   `COPY_ABILITY` as effects, a per-BATTLE activation cap
+   (`max_per_battle`, a genuinely different scope from Rabbit's per-turn
+   one), a per-species-per-event cap (`type_limit`, Bison's, the only
+   TypeLimit in Pack1), a target level filter (`min_level`, Penguin's),
+   permanent shop-wide buffs on the SEAT (Canned Food), and per-body
+   captured state - Whale's swallow memory and Parrot's copied ability
+   list, the first two things a pet CARRIES rather than has. **The
+   end-of-turn trigger order became measurable here and is
+   attack-descending with a random tie-break, so seat RNG moves on
+   tiers 1-3 boards too and stored replays shift across this commit.**
+   The appendix's guess that Hippo would need nothing but a new trigger
+   was half right: the trigger was easy and the LIMIT's scope was the
+   work, and it could only be measured through the real battle loop.
 5. **Tier 5** (Scorpion, Crocodile, Rhino, Monkey, Armadillo, Cow, Seal,
    Rooster, Shark, Turkey + Sushi, Chocolate, Chili): introduces
    `FriendFainted` (Shark) and Chocolate's direct-XP-no-merge leveling.

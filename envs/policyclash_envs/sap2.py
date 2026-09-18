@@ -1,4 +1,4 @@
-"""SAP2 (Super Auto Pets), the full Arena match - Tier 1-3 roster.
+"""SAP2 (Super Auto Pets), the full Arena match - Tier 1-4 roster.
 
 The actual multi-round Arena match: lives, trophies, a tier-gated shop
 that grows with the turn number, freeze, and the turn-3 life-back rule
@@ -8,9 +8,8 @@ requirements, sell value, shop capacity per tier, Pigeon's free Bread
 Crumbs) were measured out of the shipped build by policy-clash-re-tools, not
 taken from a wiki.
 
-Roster is still Tier 1 only (10 pets, 3 foods) - the *match engine* here
-is the real game's full structure; the pet roster is a separate, later
-expansion tracked in sap-v2.md's appendix.
+The roster reaches Tier 4 (40 rollable pets, 14 foods, 7 perks); Tiers 5
+and 6 are a separate, later expansion tracked in sap-v2.md's appendix.
 
 Rules live in C, under envs/csrc/sap2.h - self-contained, no dependency
 on any other env's files - with a thin CPython binding in
@@ -51,6 +50,8 @@ PERK_MEAT_BONE = _sap2.PERK_MEAT_BONE  # Tier 2's Meat Bone
 PERK_GARLIC = _sap2.PERK_GARLIC  # Tier 3: -2 on every hit, permanent
 PERK_MELON = _sap2.PERK_MELON  # Tier 3: blocks 20 damage, once (Ox grants it)
 PERK_BIRTHDAY_CAKE = _sap2.PERK_BIRTHDAY_CAKE  # Tier 3: +1 sell value per turn
+PERK_BREAD = _sap2.PERK_BREAD  # Tier 4: +7 temporary health at every end of turn
+PERK_CHILI = _sap2.PERK_CHILI  # Tier 4: 5 to the enemy behind the one attacked
 
 # Layout, for consumers that decode features or build actions. Derived from
 # the C core rather than copied, so a widened block cannot leave a stale
@@ -87,9 +88,12 @@ def debug_resolve_battle(
     their own rather than no in-repo test at all.
 
     team0/team1 are FRONT-TO-BACK sequences of (species ID, level, attack,
-    health) or (species ID, level, attack, health, perk) - the ids are
-    sap2.h's own, 1..23, not names; a hole is not
-    expressible, pass a shorter list. Returns (winner, side0, side1) with
+    health), optionally extended with a perk id and then with a
+    copied-ability species id - the ids are sap2.h's own, 1..40 for the
+    rollable pets plus the summoned tokens, not names; a hole is not
+    expressible, pass a shorter list. The copied-ability field is Parrot's
+    end-of-turn copy, which no sequence of actions can put into a battle
+    fixture. Returns (winner, side0, side1) with
     winner 0, 1 or -1 for a draw, each side a front-to-back list of
     (species, attack, health, level). Every field is range-checked and a
     bad one raises ValueError.
@@ -125,7 +129,7 @@ _TERMINAL: dict[int, tuple[Outcome, Termination]] = {
 
 
 class Sap2:
-    """Two-player Super Auto Pets, full Arena match, Tier 1-3 roster.
+    """Two-player Super Auto Pets, full Arena match, Tier 1-4 roster.
 
     Each round is shaped exactly like sap-v1's single round - both seats
     act simultaneously during the shop phase, a seat that ends stops

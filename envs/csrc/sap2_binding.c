@@ -167,9 +167,12 @@ static PyObject *Sap2_get_turn(Sap2Object *self, void *closure) {
  * get an entry point of their own rather than no in-repo test at all.
  *
  * team0/team1 are front-to-back sequences of (species, level, attack,
- * health) or (species, level, attack, health, perk). Returns
- * (winner, side0, side1) - winner 0, 1 or -1 for a draw - with each side
- * a list of (species, attack, health, level), front to back.
+ * health), optionally extended with a perk id and then with a
+ * copied-ability species id - Parrot's copy, which is set at the end of a
+ * build phase and so cannot be reached through the action API at all.
+ *
+ * Returns (winner, side0, side1) - winner 0, 1 or -1 for a draw - with
+ * each side a list of (species, attack, health, level), front to back.
  *
  * Every field is range-checked before it reaches the rules core. This is
  * a public C entry point reachable from Python, so a bad argument has to
@@ -198,16 +201,16 @@ static int sap2_load_debug_team(PyObject *rows, SapSeat2 *seat) {
             return -1;
         }
         const Py_ssize_t width = PySequence_Fast_GET_SIZE(row);
-        if (width < 4 || width > 5) {
+        if (width < 4 || width > 6) {
             PyErr_Format(PyExc_ValueError,
                          "team slot %zd: %zd fields, want (species, level, attack, "
-                         "health) or (species, level, attack, health, perk)",
+                         "health) with an optional perk and copied-ability id",
                          i, width);
             Py_DECREF(row);
             Py_DECREF(fast);
             return -1;
         }
-        long field[5] = {0, 0, 0, 0, SAP2_PERK_NONE};
+        long field[6] = {0, 0, 0, 0, SAP2_PERK_NONE, SAP2_SPECIES_EMPTY};
         for (Py_ssize_t f = 0; f < width; f++) {
             PyObject *value = PySequence_Fast_GET_ITEM(row, f);
             if (!PyLong_Check(value)) {
@@ -228,6 +231,7 @@ static int sap2_load_debug_team(PyObject *rows, SapSeat2 *seat) {
          * rather than truncated into range on the way in. */
         const long species = field[0], level = field[1];
         const long attack = field[2], health = field[3], perk = field[4];
+        const long copied = field[5];
         /* A species of 0 is SAP2_SPECIES_EMPTY - a hole, which this entry
          * point does not take: pass a shorter list instead. The battle
          * loads a seat by compacting it, so a hole would be invisible
@@ -259,6 +263,17 @@ static int sap2_load_debug_team(PyObject *rows, SapSeat2 *seat) {
             Py_DECREF(fast);
             return -1;
         }
+        /* 0 is the usual case - the pet runs its own ability rows. A
+         * Parrot's copy is the only thing that sets it, and it is set at
+         * the END of a build phase, so no sequence of actions can put a
+         * copied list into a battle fixture: this field is the lever. */
+        if (copied < 0 || copied >= SAP2_NUM_ALL_SPECIES) {
+            PyErr_Format(PyExc_ValueError,
+                         "team slot %zd: copied ability %ld is outside 0..%d", i, copied,
+                         SAP2_NUM_ALL_SPECIES - 1);
+            Py_DECREF(fast);
+            return -1;
+        }
         SapPet2 *p = &seat->team[i];
         p->species = (uint8_t)species;
         p->level = (uint8_t)level;
@@ -266,6 +281,7 @@ static int sap2_load_debug_team(PyObject *rows, SapSeat2 *seat) {
         p->attack = (int8_t)attack;
         p->health = (int8_t)health;
         p->perk = (uint8_t)perk;
+        p->copied = (uint8_t)copied;
     }
     Py_DECREF(fast);
     return 0;
@@ -342,7 +358,7 @@ static PyTypeObject Sap2Type = {
     PyVarObject_HEAD_INIT(NULL, 0).tp_name = "policyclash_envs._sap2.Sap2",
     .tp_basicsize = sizeof(Sap2Object),
     .tp_flags = Py_TPFLAGS_DEFAULT,
-    .tp_doc = "SAP2 (full-match, Tier-1 roster) rules core.",
+    .tp_doc = "SAP2 (Super Auto Pets, full match) rules core.",
     .tp_methods = Sap2_methods,
     .tp_getset = Sap2_getset,
     .tp_new = Sap2_new,
@@ -423,6 +439,8 @@ PyMODINIT_FUNC PyInit__sap2(void) {
         PyModule_AddIntConstant(module, "PERK_GARLIC", SAP2_PERK_GARLIC) < 0 ||
         PyModule_AddIntConstant(module, "PERK_MELON", SAP2_PERK_MELON) < 0 ||
         PyModule_AddIntConstant(module, "PERK_BIRTHDAY_CAKE", SAP2_PERK_BIRTHDAY_CAKE) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_BREAD", SAP2_PERK_BREAD) < 0 ||
+        PyModule_AddIntConstant(module, "PERK_CHILI", SAP2_PERK_CHILI) < 0 ||
         PyModule_AddIntConstant(module, "STARTING_GOLD", SAP2_STARTING_GOLD) < 0 ||
         PyModule_AddIntConstant(module, "STARTING_LIVES", SAP2_STARTING_LIVES) < 0 ||
         PyModule_AddIntConstant(module, "TROPHIES_TO_WIN", SAP2_TROPHIES_TO_WIN) < 0 ||
